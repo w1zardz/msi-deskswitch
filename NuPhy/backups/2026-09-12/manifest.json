@@ -1,0 +1,33 @@
+{
+  "created": "2026-09-12",
+  "model": "NuPhy Air100 V3",
+  "exporter": "NuPhyIO 2.2.7",
+  "active_mode_at_export": "M2 Windows",
+  "encryption": "age X25519",
+  "archive": "air100-v3.tar.gz.age",
+  "archive_sha256": "f5f35e4bbd6bd08cf604e8330f4a7bf575df074efc6ad6048775a82904b8d72e",
+  "files": [
+    {
+      "name": "NuPhy-Air100V3-M1-Mac-2026-09-12.json",
+      "size": 4840,
+      "sha256": "2eccf6c7dc507e35397ab32a1b46ffc7b73df861f6b46da85f9887027a8dab27",
+      "verified_embedded_checksums": 7,
+      "layers": 4,
+      "key_slots_per_layer": 110,
+      "macro_memory_bytes": 2048,
+      "macro_slots": 32,
+      "active_macros": 0
+    },
+    {
+      "name": "NuPhy-Air100V3-M2-Windows-2026-09-12.json",
+      "size": 4840,
+      "sha256": "c2cdcf0b34fcf48062289a4cd6d4606ca82420f5d04941f0184b4e7db0f290c3",
+      "verified_embedded_checksums": 7,
+      "layers": 4,
+      "key_slots_per_layer": 110,
+      "macro_memory_bytes": 2048,
+      "macro_slots": 32,
+      "active_macros": 0
+    }
+  ]
+}
