@@ -1,0 +1,45 @@
+ПЕРЕКЛЮЧЕНИЕ MAC → WINDOWS
+
+Подключи мышь и NuPhy к USB-портам MSI MAG 322UPF.
+NuPhy: Wired. MSI: KVM Auto.
+
+1. На Mac распакуй DeskSwitch-Mac.zip.
+2. Дважды нажми Install.command.
+   Если macOS не запускает командный файл: открой Терминал, напиши bash с пробелом,
+   перетащи Install.command в окно Терминала и нажми Enter.
+3. Разреши Hammerspoon управление в:
+   Системные настройки → Конфиденциальность и безопасность → Универсальный доступ.
+4. В меню Hammerspoon сверху выбери Reload Config.
+
+После этого:
+• PageDown на Mac → Windows.
+• PageDown на Windows → Mac.
+• На Mac также есть меню Mac ↔ PC.
+• NuPhy всё время остаётся в Wired. Мышь всё время остаётся на канале Bolt.
+
+Homebrew, инструменты разработчика и пароль администратора для копирования файлов
+не нужны. macOS может отдельно потребовать подтверждение разрешения Hammerspoon.
+Нужны Mac Apple M-серии и macOS 13+.
+
+Содержимое:
+• Hammerspoon 1.1.1 — оригинальный архив официального релиза.
+  https://github.com/Hammerspoon/hammerspoon/releases/tag/1.1.1
+  SHA256: 11bb1c90faf5427f37c7bd4fe7eab9774ae43e1d5cb020c5b3088dac32849efa
+• m1ddc 1.2.0 — готовая сборка Homebrew для arm64 Ventura; без сторонних зависимостей.
+  https://formulae.brew.sh/formula/m1ddc
+  SHA256: fd4b3c88cd24a1992cb6eb8fa0c82edc301ef5831de19416cc5691c758b4b03d
+• desk-switch.lua — настройка именно для MSI MAG 322UPF.
+
+Установщик проверяет контрольные суммы, сохраняет резервную копию существующей
+конфигурации Hammerspoon, добавляет одну строку загрузки модуля и сохраняет журнал
+Install.log рядом с собой. Уже установленный Hammerspoon не заменяется.
+
+Пути установки: ~/Applications/Hammerspoon.app (если приложения ещё нет),
+~/.hammerspoon/desk-switch.lua и ~/.hammerspoon/desk-switch-bin/.
+
+Для удаления настройки: убери строку deskSwitchMSI = require("desk-switch")
+из ~/.hammerspoon/init.lua, удали desk-switch.lua и папку desk-switch-bin,
+затем выбери Reload Config. Автозапуск Hammerspoon можно выключить в его настройках.
+
+Сборка пакета и команды переключения из Windows проверены.
+Сам установщик и горячая клавиша требуют проверки на твоём Mac.
