@@ -323,6 +323,7 @@ struct CoreTests {
             try windowsKeyboard()
             try languageChord()
             try await headphones()
+            try await testAudioOutput()
             try await commandRunner()
             print("PASS: \(checks) checks for displays, keyboard, GoXLR volume, and helper execution")
         } catch {

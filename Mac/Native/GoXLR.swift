@@ -125,8 +125,12 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
     @Published private(set) var status = "Запусти GoXLR Utility и выбери устройство."
     @Published private(set) var refreshing = false
     @Published private(set) var lastKey = ""
+    // Runtime routing state; preserve the user's saved GoXLR preference on speakers.
+    @Published var outputActive = true {
+        didSet { if oldValue != outputActive { invalidate() } }
+    }
     var onCaptureChanged: (() -> Void)?
-    var captureEnabled: Bool { enabled && !serial.isEmpty && (1...65535).contains(port) }
+    var captureEnabled: Bool { outputActive && enabled && !serial.isEmpty && (1...65535).contains(port) }
     var selected: GoXLRDevice? { devices.first { $0.id == serial } }
     private let api: GoXLRTransport
     private let defaults: UserDefaults?
@@ -190,7 +194,7 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
     func enqueue(_ action: HeadphonesAction) {
         guard captureEnabled else { return }
         activity += 1
-        lastKey = action == .mute ? "Нажатие ручки" : (action == .step(5) ? "Громкость +" : "Громкость −")
+        lastKey = action == .mute ? "Выключить / включить звук" : (action == .step(5) ? "Громкость +" : "Громкость −")
         if case .step(let delta) = action, case .step(let previous)? = pending.last,
            (delta > 0) == (previous > 0) {
             pending[pending.count - 1] = .step(max(-255, min(255, previous + delta)))

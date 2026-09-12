@@ -41,6 +41,30 @@ import SwiftUI
         add("Перейти в Windows", action: #selector(windows), icon: "pc", enabled: controller.canSwitch, to: menu)
         add("Показать MacBook на MSI", action: #selector(mac), icon: "laptopcomputer", enabled: controller.canSwitch, to: menu)
         menu.addItem(.separator())
+        controller.audioOutput.refresh()
+        let sound = NSMenuItem(title: "Звук: " + controller.audioOutput.actualOutputName, action: nil, keyEquivalent: "")
+        sound.image = NSImage(systemSymbolName: controller.audioOutput.usesGoXLR ? "headphones" : "speaker.wave.2", accessibilityDescription: nil)
+        let outputs = NSMenu()
+        outputs.autoenablesItems = false
+        for output in controller.audioOutput.outputs {
+            let entry = add(output.name, action: #selector(selectAudioOutput(_:)),
+                            icon: output.kind == .speakers ? "laptopcomputer" : "headphones", to: outputs)
+            entry.representedObject = output.id
+            entry.state = output.id == controller.audioOutput.actualOutputUID ? .on : .off
+        }
+        if !controller.audioOutput.outputs.contains(where: { $0.kind == .goxlr }) {
+            let offline = NSMenuItem(title: "Наушники GoXLR — не подключены", action: nil, keyEquivalent: "")
+            offline.isEnabled = false
+            outputs.addItem(offline)
+        }
+        if let error = controller.audioOutput.error {
+            let warning = NSMenuItem(title: error, action: nil, keyEquivalent: "")
+            warning.isEnabled = false
+            outputs.addItem(warning)
+        }
+        sound.submenu = outputs
+        menu.addItem(sound)
+        menu.addItem(.separator())
         if !controller.accessibility {
             add("Включить клавиатуру…", action: #selector(showSettings), icon: "keyboard", to: menu)
         } else {
@@ -66,6 +90,10 @@ import SwiftUI
     @objc private func windows() { controller.switchTo(.windows) }
     @objc private func mac() { controller.switchTo(.mac) }
     @objc private func pauseKeys() { controller.paused.toggle() }
+    @objc private func selectAudioOutput(_ sender: NSMenuItem) {
+        guard let uid = sender.representedObject as? String else { return }
+        controller.audioOutput.select(uid)
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc func showSettings() {
@@ -188,6 +216,7 @@ struct DeskSettings: View {
                     }.padding(8)
                 }
 
+                AudioOutputSettings(model: model.audioOutput)
                 HeadphonesSettings(model: model.headphones)
 
                 VStack(alignment: .leading, spacing: 7) {
@@ -221,6 +250,31 @@ struct DeskSettings: View {
     }
 }
 
+private struct AudioOutputSettings: View {
+    @ObservedObject var model: AudioOutputController
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Куда выводить звук Mac", systemImage: "speaker.wave.2").fontWeight(.semibold)
+                ForEach(model.outputs) { output in
+                    Button { model.select(output.id) } label: {
+                        HStack {
+                            Image(systemName: output.kind == .speakers ? "laptopcomputer" : "headphones")
+                            Text(output.name)
+                            Spacer()
+                            if model.actualOutputUID == output.id { Image(systemName: "checkmark") }
+                        }.frame(maxWidth: .infinity)
+                    }
+                }
+                Text(model.error ?? model.status).font(.system(size: 12))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Динамики MacBook — обычная громкость Mac. Наушники GoXLR — управление Headphones, если оно включено ниже. Микрофон остаётся выбранным как прежде.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(8)
+        }
+    }
+}
+
 private struct HeadphonesSettings: View {
     @ObservedObject var model: HeadphonesController
     var body: some View {
@@ -236,8 +290,12 @@ private struct HeadphonesSettings: View {
                 }
                 Toggle("Ручка клавиатуры управляет наушниками", isOn: $model.enabled)
                     .disabled(model.serial.isEmpty)
-                Text("Поворот — громкость Headphones, нажатие — выключить звук и вернуть прежний уровень. Заменяет обычные клавиши громкости этого Mac.")
+                Text("При выводе в GoXLR поворот меняет Headphones. Нажатие NuPhy остаётся Delete. Отдельная клавиша Mute выключает звук и возвращает прежний уровень.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !model.outputActive {
+                    Text("Сейчас выбран другой выход. Крутилка регулирует обычную громкость Mac.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
                 Text(model.status).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
                 if !model.lastKey.isEmpty { Text("Получено: " + model.lastKey).font(.system(size: 11)).foregroundStyle(.secondary) }
                 HStack {

@@ -65,6 +65,26 @@ extension CoreTests {
         try expect(keys.handle(key: 0, down: false, repeated: false, enabled: true).consume, "Keep ownership until the inert key is released")
         try expect(keys.handle(key: 0, down: true, repeated: false, enabled: true).action == .step(5), "A new press is allowed after release")
 
+        let routeAPI = FakeGoXLR()
+        let routed = HeadphonesController(api: routeAPI, defaults: nil)
+        routed.serial = "A"; routed.enabled = true
+        routed.enqueue(.step(5))
+        routed.outputActive = false
+        await routed.waitUntilIdle()
+        routed.enqueue(.step(5)); routed.enqueue(.mute)
+        await routed.waitUntilIdle()
+        try expect(routeAPI.writes.isEmpty && !routed.captureEnabled,
+                   "Speakers cancel queued Headphones actions and release media keys")
+        try expect(routed.enabled && routed.serial == "A", "Speakers preserve saved GoXLR preferences")
+        routed.outputActive = true
+        routed.enqueue(.step(5)); await routed.waitUntilIdle()
+        try expect(routed.captureEnabled && routeAPI.writes.map { $0.1 } == [105],
+                   "Returning to GoXLR resumes new ticks without replaying old actions")
+        routeAPI.writes.removeAll()
+        routeAPI.beforeRead = { routed.outputActive = false }
+        routed.enqueue(.step(5)); await routed.waitUntilIdle()
+        try expect(routeAPI.writes.isEmpty, "Output change during API read prevents a stale Headphones write")
+
         let api = FakeGoXLR()
         let control = HeadphonesController(api: api, defaults: nil)
         control.enabled = true

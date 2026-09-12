@@ -41,6 +41,7 @@ import OSLog
     @Published var paused = false { didSet { if paused { pendingSwitch = nil; headphones.invalidate() }; updateHotKeys() } }
     @Published var history: [String] = []
     let headphones = HeadphonesController()
+    let audioOutput = AudioOutputController()
     private let keys = HotKeys()
     private let runner: CommandRunner
     private var timer: Timer?
@@ -77,6 +78,18 @@ import OSLog
         keys.onSwitchKeyObserved = { [weak self] in self?.lastSwitchKey = $0 == 116 ? "PageUp" : "PageDown" }
         keys.onHeadphonesAction = { [weak self] in self?.headphones.enqueue($0) }
         headphones.onCaptureChanged = { [weak self] in self?.keys.invalidateVolumeCallbacks(); self?.updateHotKeys() }
+        audioOutput.onOutputWillChange = { [weak self] in
+            self?.headphones.outputActive = false
+            self?.headphones.invalidate()
+        }
+        audioOutput.onOutputChanged = { [weak self] in
+            guard let self else { return }
+            let active = self.audioOutput.usesGoXLR
+            if self.headphones.outputActive == active { self.headphones.invalidate() }
+            else { self.headphones.outputActive = active }
+            self.updateHotKeys()
+        }
+        headphones.outputActive = audioOutput.usesGoXLR
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.invalidateConnection(); self?.keys.stop() }
@@ -228,6 +241,7 @@ import OSLog
                      "PageDown: \(pageDownEnabled); paused: \(paused)",
                      "Switch key: \(switchKeyCode); Windows shortcuts: \(windowsShortcutsEnabled); AltShift: \(languageSwitchEnabled)",
                      "GoXLR: \(headphones.enabled); selected: \(headphones.serial); port: \(headphones.port); \(headphones.status)",
+                     "Audio output: \(audioOutput.actualOutputName); preferred: \(audioOutput.preferredUID); \(audioOutput.status)",
                      "Last error: \(lastError ?? "none")"] + history).joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
