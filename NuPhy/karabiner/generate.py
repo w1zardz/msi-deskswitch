@@ -70,12 +70,19 @@ def document():
     for key in ("c", "v"):
         shortcuts.append(basic(key, ["control", "shift"], ["caps_lock"],
                                [{"key_code": key, "modifiers": ["command"]}], [in_terminal]))
-    page_down = basic("page_down", optional=["caps_lock"])
-    page_down["to_after_key_up"] = [{"key_code": "f11", "modifiers": ["control", "shift"]}]
+    page_down_rules = []
+    for standard_fkeys in (True, False):
+        page_down = basic("page_down", optional=["caps_lock"], conditions=[
+            {"type": "variable_if", "name": "system.use_fkeys_as_standard_function_keys", "value": standard_fkeys}])
+        # Modified F11 still passes through macOS's function-key interpretation.
+        # Fn prevents F11 turning into a volume key when the system uses media keys.
+        modifiers = ["control", "shift"] + ([] if standard_fkeys else ["fn"])
+        page_down["to_after_key_up"] = [{"key_code": "f11", "modifiers": modifiers}]
+        page_down_rules.append(page_down)
     return {"title": "NuPhy Air100 V3: Windows shortcuts on Mac (DeskSwitch)", "rules": [
         {"description": PREFIX + "Alt+Shift и Alt+Tab", "manipulators": language},
         {"description": PREFIX + "Ctrl и навигация", "manipulators": shortcuts},
-        {"description": PREFIX + "PGDN после отпускания", "manipulators": [page_down]}]}
+        {"description": PREFIX + "PGDN после отпускания", "manipulators": page_down_rules}]}
 
 
 if __name__ == "__main__":

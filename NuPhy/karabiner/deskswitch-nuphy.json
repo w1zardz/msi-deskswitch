@@ -2258,6 +2258,11 @@
                   "is_keyboard": true
                 }
               ]
+            },
+            {
+              "type": "variable_if",
+              "name": "system.use_fkeys_as_standard_function_keys",
+              "value": true
             }
           ],
           "to_after_key_up": [
@@ -2266,6 +2271,45 @@
               "modifiers": [
                 "control",
                 "shift"
+              ]
+            }
+          ]
+        },
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "page_down",
+            "modifiers": {
+              "optional": [
+                "caps_lock"
+              ]
+            }
+          },
+          "to": [],
+          "conditions": [
+            {
+              "type": "device_if",
+              "identifiers": [
+                {
+                  "vendor_id": 6645,
+                  "product_id": 4141,
+                  "is_keyboard": true
+                }
+              ]
+            },
+            {
+              "type": "variable_if",
+              "name": "system.use_fkeys_as_standard_function_keys",
+              "value": false
+            }
+          ],
+          "to_after_key_up": [
+            {
+              "key_code": "f11",
+              "modifiers": [
+                "control",
+                "shift",
+                "fn"
               ]
             }
           ]

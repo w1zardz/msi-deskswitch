@@ -6,11 +6,44 @@ import json
 import os
 import plistlib
 from pathlib import Path
+import subprocess
 import tempfile
-from generate import PREFIX, document
+from generate import DEVICE, PREFIX, document
 
 
-def merge(config, profile_name):
+def read_builtin_devices():
+    """Use Karabiner's exact device identity, never a guessed Apple/device filter."""
+    cli = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
+    try:
+        response = subprocess.run([cli, "--list-connected-devices"], check=True,
+                                  capture_output=True, text=True, timeout=5)
+        devices = json.loads(response.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise ValueError("Не удалось прочитать устройства Karabiner. Открой Karabiner и повтори установку; файл не изменён.") from error
+    if not isinstance(devices, list) or any(not isinstance(device, dict) for device in devices):
+        raise ValueError("Karabiner вернул некорректный список устройств; файл не изменён.")
+    builtins = []
+    for device in devices:
+        if device.get("is_built_in_keyboard") is not True:
+            continue
+        identifiers = device.get("device_identifiers")
+        if (not isinstance(identifiers, dict) or identifiers.get("is_keyboard") is not True
+                or "is_built_in_keyboard" in identifiers):
+            raise ValueError("Karabiner не сообщил точный идентификатор встроенной клавиатуры; файл не изменён.")
+        # In this MacBook the exact identity is {is_keyboard:true}; the absent
+        # vendor/product IDs mean zero in Karabiner, not a wildcard for all keyboards.
+        if any(other.get("is_built_in_keyboard") is not True
+               and other.get("device_identifiers") == identifiers for other in devices):
+            raise ValueError("Идентификатор встроенной клавиатуры совпал с другим устройством; файл не изменён.")
+        entry = {"identifiers": copy.deepcopy(identifiers), "ignore": True}
+        if entry not in builtins:
+            builtins.append(entry)
+    if not builtins:
+        raise ValueError("Karabiner пока не видит встроенную клавиатуру MacBook. Открой Karabiner и повтори установку; файл не изменён.")
+    return builtins
+
+
+def merge(config, profile_name, builtin_devices=None):
     result = copy.deepcopy(config)
     profiles = result.setdefault("profiles", [])
     if not isinstance(profiles, list):
@@ -18,7 +51,15 @@ def merge(config, profile_name):
     if not profiles:
         if profile_name not in (None, "DeskSwitch NuPhy"):
             raise ValueError("В новой конфигурации создаётся профиль DeskSwitch NuPhy.")
-        profiles.append({"name": "DeskSwitch NuPhy", "selected": True})
+        if builtin_devices is None:
+            raise ValueError("Для нового профиля сначала нужны точные устройства Karabiner.")
+        nuphy_device = {"identifiers": copy.deepcopy(DEVICE["identifiers"][0]), "ignore": False,
+                        "fn_function_keys": [
+                            {"from": {"key_code": f"f{i}"}, "to": [{"key_code": f"f{i}"}]}
+                            for i in range(1, 13)]}
+        profiles.append({"name": "DeskSwitch NuPhy", "selected": True,
+                         "virtual_hid_keyboard": {"keyboard_type_v2": "ansi"},
+                         "devices": [*copy.deepcopy(builtin_devices), nuphy_device]})
         chosen = profiles[0]
     else:
         matches = [p for p in profiles if p.get("name") == profile_name]
@@ -47,7 +88,8 @@ def install(path, profile_name):
         raise ValueError("Конфигурация — символическая ссылка. Укажи реальный файл через --config.")
     original = path.read_bytes() if path.exists() else None
     config = json.loads(original) if original is not None else {}
-    result, name = merge(config, profile_name)
+    builtin_devices = read_builtin_devices() if not config.get("profiles") else None
+    result, name = merge(config, profile_name, builtin_devices)
     data = (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     if data == original:
         return name
