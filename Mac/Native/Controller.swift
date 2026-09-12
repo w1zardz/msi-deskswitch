@@ -38,8 +38,9 @@ import OSLog
     }
     @Published var lastLanguage = ""
     @Published var lastSwitchKey = ""
-    @Published var paused = false { didSet { if paused { pendingSwitch = nil }; updateHotKeys() } }
+    @Published var paused = false { didSet { if paused { pendingSwitch = nil; headphones.invalidate() }; updateHotKeys() } }
     @Published var history: [String] = []
+    let headphones = HeadphonesController()
     private let keys = HotKeys()
     private let runner: CommandRunner
     private var timer: Timer?
@@ -74,6 +75,8 @@ import OSLog
         keys.onError = { [weak self] in self?.report(DeskError.message($0)) }
         keys.onLanguageChanged = { [weak self] in self?.lastLanguage = $0 }
         keys.onSwitchKeyObserved = { [weak self] in self?.lastSwitchKey = $0 == 116 ? "PageUp" : "PageDown" }
+        keys.onHeadphonesAction = { [weak self] in self?.headphones.enqueue($0) }
+        headphones.onCaptureChanged = { [weak self] in self?.keys.invalidateVolumeCallbacks(); self?.updateHotKeys() }
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.invalidateConnection(); self?.keys.stop() }
@@ -103,6 +106,7 @@ import OSLog
         loginEnabled = SMAppService.mainApp.status == .enabled
         loginNeedsApproval = SMAppService.mainApp.status == .requiresApproval
         updateHotKeys()
+        if !paused { headphones.refreshIfNeeded() }
     }
 
     private func updateHotKeys() {
@@ -111,10 +115,12 @@ import OSLog
         keys.switchKeyCode = switchKeyCode
         keys.windowsShortcutsEnabled = windowsShortcutsEnabled && !paused
         keys.languageSwitchEnabled = languageSwitchEnabled && !paused
+        keys.headphonesEnabled = headphones.captureEnabled && !paused
     }
 
     private func invalidateConnection() {
         connectionGeneration += 1
+        headphones.invalidate()
         pendingSwitch = nil
         displays = []
         currentInput = nil
@@ -215,12 +221,13 @@ import OSLog
     }
 
     func copyDiagnostics() {
-        let text = (["MSI DeskSwitch 2.0.0", ProcessInfo.processInfo.operatingSystemVersionString,
+        let text = (["MSI DeskSwitch 2.1.0", ProcessInfo.processInfo.operatingSystemVersionString,
                      "Display: \(selectedDisplay?.name ?? "none")", "UUID: \(selection)",
                      "Input: \(currentInput.map(String.init) ?? "unknown")",
                      "Accessibility: \(accessibility); hotkeys: \(shortcutsReady)",
                      "PageDown: \(pageDownEnabled); paused: \(paused)",
                      "Switch key: \(switchKeyCode); Windows shortcuts: \(windowsShortcutsEnabled); AltShift: \(languageSwitchEnabled)",
+                     "GoXLR: \(headphones.enabled); selected: \(headphones.serial); port: \(headphones.port); \(headphones.status)",
                      "Last error: \(lastError ?? "none")"] + history).joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)

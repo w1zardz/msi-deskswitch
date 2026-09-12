@@ -322,8 +322,9 @@ struct CoreTests {
             try selectedSwitchKey()
             try windowsKeyboard()
             try languageChord()
+            try await headphones()
             try await commandRunner()
-            print("PASS: \(checks) checks for displays, handoff keys, Windows shortcuts, language gestures, and helper execution")
+            print("PASS: \(checks) checks for displays, keyboard, GoXLR volume, and helper execution")
         } catch {
             fputs("FAIL: \(error)\n", stderr)
             exit(1)

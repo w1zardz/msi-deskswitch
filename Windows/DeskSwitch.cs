@@ -6,6 +6,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 // Only controls the MSI MAG 322UPF input (VCP 0x60).
 // USB sharing requires the monitor's KVM=Auto and the documented cabling.
@@ -104,6 +105,14 @@ internal sealed class Tray : ApplicationContext {
     int busy;
     int wheelBusy;
     string lastWheelStatus;
+    readonly GoXlrAudio audio;
+    readonly GoXlrVolumeHook volumeHook;
+    readonly ToolStripMenuItem audioEnabled = new ToolStripMenuItem("Ручка → Headphones GoXLR");
+    readonly ToolStripMenuItem audioStatus = new ToolStripMenuItem("GoXLR Utility: проверка…") {Enabled=false};
+    readonly ToolStripMenuItem audioDevices = new ToolStripMenuItem("Выбрать GoXLR по serial");
+    readonly ToolStripMenuItem audioPort = new ToolStripMenuItem();
+    GoXlrMixer[] audioMixers = new GoXlrMixer[0];
+    string lastAudioError;
     readonly System.Windows.Forms.Timer wheelTimer = new System.Windows.Forms.Timer {Interval=1500};
     public Tray() {
         dispatch.CreateControl();
@@ -111,13 +120,107 @@ internal sealed class Tray : ApplicationContext {
         menu.Items.Add("MacBook — PageDown", null, delegate { Switch(16); });
         menu.Items.Add("Windows — DisplayPort", null, delegate { Switch(15); });
         menu.Items.Add("Восстановить прокрутку MX Master 3S", null, delegate { RepairWheel(); });
+        var audioMenu=new ToolStripMenuItem("GoXLR Utility · Headphones");
+        audioMenu.DropDownItems.Add(audioStatus);
+        audioMenu.DropDownItems.Add(audioEnabled);
+        audioMenu.DropDownItems.Add(audioDevices);
+        audioMenu.DropDownItems.Add(audioPort);
+        audioMenu.DropDownItems.Add("Обновить устройства и статус",null,delegate {audio.Refresh();});
+        audioMenu.DropDownItems.Add("О подключении GoXLR Utility…",null,delegate {
+            MessageBox.Show("Ручка и клавиши Volume +/−/Mute меняют только Headphones выбранного GoXLR. Шаг — около 2%.\n\nНужен уже настроенный и запущенный GoXLR Utility с локальным HTTP API. Это подключение использует API GoXLR Utility. DeskSwitch не устанавливает и не запускает Utility: первый запуск Utility может загрузить профиль в устройство.\n\nВыбери serial, затем включи ручку. Пока функция выключена, клавиши работают обычно. Если функция включена, но GoXLR недоступен, системная громкость не меняется.\n\nMute возвращает прежний уровень только в текущем подключении. После ошибки, отключения или смены настроек сохранённый уровень сбрасывается.","GoXLR Utility · Headphones",MessageBoxButtons.OK,MessageBoxIcon.Information);
+        });
+        menu.Items.Add(audioMenu);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Выход", null, delegate { ExitThread(); });
         icon = new NotifyIcon { Icon=SystemIcons.Application, Text="MSI: PageDown → MacBook", ContextMenuStrip=menu, Visible=true };
         icon.DoubleClick += delegate { Switch(16); };
+        GoXlrSettings audioSettings;
+        try {audioSettings=GoXlrSettings.Load();}
+        catch(Exception error) {audioSettings=new GoXlrSettings(); Program.Log("GoXLR settings: "+error.Message);}
+        audio=new GoXlrAudio(audioSettings,AudioUpdate);
+        try {volumeHook=new GoXlrVolumeHook(audio);}
+        catch(Exception error) {
+            audioSettings.Enabled=false; audio.Configure(audioSettings);
+            audioStatus.Text=error.Message; Program.Log("GoXLR hook: "+error.Message);
+        }
+        audioEnabled.Click += delegate {
+            var value=audio.Settings; value.Enabled=!value.Enabled; SaveAudio(value);
+        };
+        audioPort.Click += delegate {ChooseAudioPort();};
+        UpdateAudioMenu(); audio.Refresh();
+        SystemEvents.PowerModeChanged += PowerChanged;
+        SystemEvents.SessionSwitch += SessionChanged;
         wheelTimer.Tick += delegate {RepairWheel();};
-        hotkey = new HotkeyWindow(delegate { Switch(16); }, delegate {RepairWheel();});
+        hotkey = new HotkeyWindow(delegate { Switch(16); }, delegate {RepairWheel(); audio.HardwareChanged();});
         wheelTimer.Start();
+    }
+    void PowerChanged(object sender,PowerModeChangedEventArgs e) {
+        if(e.Mode==PowerModes.Suspend) audio.Suspend(true);
+        if(e.Mode==PowerModes.Resume) audio.Suspend(false);
+    }
+    void SessionChanged(object sender,SessionSwitchEventArgs e) {
+        switch(e.Reason) {
+            case SessionSwitchReason.SessionLock:
+            case SessionSwitchReason.SessionLogoff:
+            case SessionSwitchReason.ConsoleDisconnect:
+            case SessionSwitchReason.RemoteDisconnect:
+                audio.SuspendSession(true); break;
+            case SessionSwitchReason.SessionUnlock:
+            case SessionSwitchReason.SessionLogon:
+            case SessionSwitchReason.ConsoleConnect:
+            case SessionSwitchReason.RemoteConnect:
+                audio.SuspendSession(false); break;
+        }
+    }
+    void AudioUpdate(GoXlrUpdate update) {
+        if(dispatch.IsDisposed) return;
+        try {dispatch.BeginInvoke((Action)delegate {
+            if(dispatch.IsDisposed || update.Revision!=audio.Revision) return;
+            audioStatus.Text=update.Status; audioMixers=update.Mixers; UpdateAudioMenu();
+            if(update.Error && update.Status!=lastAudioError) {
+                Program.Log("GoXLR: "+update.Status);
+                if(audio.Settings.Enabled) icon.ShowBalloonTip(6000,"GoXLR · Headphones",update.Status,ToolTipIcon.Warning);
+            }
+            lastAudioError=update.Error?update.Status:null;
+        });} catch(InvalidOperationException) { }
+    }
+    void UpdateAudioMenu() {
+        var value=audio.Settings;
+        audioEnabled.Checked=value.Enabled;
+        audioEnabled.Enabled=volumeHook!=null && value.Serial.Length>0;
+        audioPort.Text="Локальный API: 127.0.0.1:"+value.Port+"…";
+        audioDevices.DropDownItems.Clear();
+        bool found=false;
+        foreach(var mixer in audioMixers) {
+            string serial=mixer.Serial;
+            var item=new ToolStripMenuItem(mixer.Name+" · "+serial) {Checked=serial==value.Serial};
+            item.Click += delegate {var chosen=audio.Settings; chosen.Serial=serial; SaveAudio(chosen);};
+            audioDevices.DropDownItems.Add(item); if(serial==value.Serial) found=true;
+        }
+        if(value.Serial.Length>0 && !found) audioDevices.DropDownItems.Add(new ToolStripMenuItem(value.Serial+" · не подключён") {Checked=true,Enabled=false});
+        if(audioMixers.Length==0) audioDevices.DropDownItems.Add(new ToolStripMenuItem("Устройств нет — проверь GoXLR Utility") {Enabled=false});
+    }
+    void SaveAudio(GoXlrSettings value) {
+        try {
+            value.Save();
+            if(value.Port!=audio.Settings.Port) audioMixers=new GoXlrMixer[0];
+            audio.Configure(value); UpdateAudioMenu();
+        } catch(Exception error) {MessageBox.Show(error.Message,"Настройки GoXLR",MessageBoxButtons.OK,MessageBoxIcon.Error);}
+    }
+    void ChooseAudioPort() {
+        using(var dialog=new Form {Text="Локальный API GoXLR Utility",ClientSize=new Size(405,140),FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,MinimizeBox=false,StartPosition=FormStartPosition.CenterScreen}) {
+            dialog.Controls.Add(new Label {Text="Адрес: 127.0.0.1   ·   Порт (по умолчанию 14564)",AutoSize=true,Location=new Point(16,15)});
+            var port=new NumericUpDown {Minimum=1,Maximum=65535,Value=audio.Settings.Port,Location=new Point(16,42),Width=150};
+            dialog.Controls.Add(port);
+            dialog.Controls.Add(new Label {Text="После смены порта выбери GoXLR и включи ручку заново.",AutoSize=true,Location=new Point(16,73)});
+            var accept=new Button {Text="Сохранить",DialogResult=DialogResult.OK,Location=new Point(207,104),Width=90};
+            var cancel=new Button {Text="Отмена",DialogResult=DialogResult.Cancel,Location=new Point(303,104),Width=85};
+            dialog.Controls.Add(accept); dialog.Controls.Add(cancel); dialog.AcceptButton=accept; dialog.CancelButton=cancel;
+            if(dialog.ShowDialog()==DialogResult.OK) {
+                var value=audio.Settings;
+                if(value.Port!=(int)port.Value) {value.Port=(int)port.Value; value.Serial=""; value.Enabled=false; SaveAudio(value);}
+            }
+        }
     }
     void RepairWheel() {
         if(Interlocked.Exchange(ref wheelBusy,1)!=0) return;
@@ -142,6 +245,9 @@ internal sealed class Tray : ApplicationContext {
         });
     }
     protected override void ExitThreadCore() {
+        SystemEvents.PowerModeChanged -= PowerChanged;
+        SystemEvents.SessionSwitch -= SessionChanged;
+        if(volumeHook!=null) volumeHook.Dispose(); audio.Dispose();
         wheelTimer.Dispose(); hotkey.Dispose(); icon.Visible=false; icon.Dispose(); dispatch.Dispose(); base.ExitThreadCore();
     }
 }

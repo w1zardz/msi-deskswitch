@@ -188,6 +188,8 @@ struct DeskSettings: View {
                     }.padding(8)
                 }
 
+                HeadphonesSettings(model: model.headphones)
+
                 VStack(alignment: .leading, spacing: 7) {
                     Toggle("Запускать DeskSwitch при входе", isOn: Binding(get: { model.loginEnabled }, set: model.setLogin))
                     if model.loginNeedsApproval {
@@ -216,5 +218,44 @@ struct DeskSettings: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+private struct HeadphonesSettings: View {
+    @ObservedObject var model: HeadphonesController
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Наушники GoXLR", systemImage: "headphones").fontWeight(.semibold)
+                Picker("Устройство", selection: $model.serial) {
+                    Text("Выбери свой GoXLR").tag("")
+                    if !model.serial.isEmpty && model.selected == nil {
+                        Text(model.serial + " — отключён").tag(model.serial)
+                    }
+                    ForEach(model.devices) { device in Text("GoXLR · " + device.id).tag(device.id) }
+                }
+                Toggle("Ручка клавиатуры управляет наушниками", isOn: $model.enabled)
+                    .disabled(model.serial.isEmpty)
+                Text("Поворот — громкость Headphones, нажатие — выключить звук и вернуть прежний уровень. Заменяет обычные клавиши громкости этого Mac.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(model.status).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                if !model.lastKey.isEmpty { Text("Получено: " + model.lastKey).font(.system(size: 11)).foregroundStyle(.secondary) }
+                HStack {
+                    Group {
+                        Button("−") { model.enqueue(.step(-5)) }.accessibilityLabel("Тише в наушниках")
+                        Button("Вкл./выкл. звук") { model.enqueue(.mute) }
+                        Button("+") { model.enqueue(.step(5)) }.accessibilityLabel("Громче в наушниках")
+                    }.disabled(!model.captureEnabled)
+                    Spacer()
+                    Button("Обновить") { Task { await model.refresh() } }.disabled(model.refreshing)
+                }
+                DisclosureGroup("Подключение к GoXLR Utility") {
+                    TextField("Порт", value: $model.port, format: .number.grouping(.never))
+                    Text("Подключение только на этом Mac. Обычно порт 14564. Сначала перенеси свои профили в GoXLR Utility.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Link("Инструкция GoXLR", destination: URL(string: "https://github.com/w1zardz/msi-deskswitch/blob/master/Mac/GoXLR.md")!)
+                }
+            }.padding(8)
+        }.task { await model.refresh() }
     }
 }

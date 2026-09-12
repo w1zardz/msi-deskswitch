@@ -82,7 +82,7 @@ xcrun swiftc -O -whole-module-optimization -parse-as-library \
     -framework AppKit -framework SwiftUI -framework Carbon \
     "$task_native/Core.swift" "$task_native/Controller.swift" \
     "$task_native/HotKeys.swift" "$task_native/Keyboard.swift" \
-    "$task_native/DeskSwitchApp.swift" \
+    "$task_native/DeskSwitchApp.swift" "$task_native/GoXLR.swift" \
     -o "$task_app/Contents/MacOS/MSI DeskSwitch"
 xcrun swift "$task_native/make-icon.swift" "$task_stage/AppIcon.iconset"
 /usr/bin/iconutil -c icns "$task_stage/AppIcon.iconset" -o "$task_app/Contents/Resources/AppIcon.icns"
