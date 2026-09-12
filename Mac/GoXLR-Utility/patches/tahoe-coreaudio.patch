@@ -1,0 +1,209 @@
+--- a/daemon/src/platform/macos/core_audio.rs
++++ b/daemon/src/platform/macos/core_audio.rs
+@@ -18,9 +18,10 @@
+     AudioDeviceID, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
+     AudioObjectPropertyAddress, AudioObjectSetPropertyData, AudioValueTranslation, KERN_SUCCESS,
+     kAudioAggregateDevicePropertyFullSubDeviceList, kAudioDevicePropertyDeviceUID,
+-    kAudioDevicePropertyPreferredChannelsForStereo, kAudioHardwareNoError,
+-    kAudioHardwarePropertyDevices, kAudioHardwarePropertyPlugInForBundleID,
+-    kAudioObjectPropertyElementMaster, kAudioObjectPropertyScopeGlobal,
++    kAudioDevicePropertyPreferredChannelsForStereo, kAudioDevicePropertyTransportType,
++    kAudioDeviceTransportTypeUSB, kAudioHardwareNoError, kAudioHardwarePropertyDevices,
++    kAudioHardwarePropertyPlugInForBundleID, kAudioObjectPropertyElementMaster,
++    kAudioObjectPropertyManufacturer, kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal,
+     kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject,
+     kAudioObjectUnknown, kAudioPlugInCreateAggregateDevice, kAudioPlugInDestroyAggregateDevice,
+ };
+@@ -427,5 +428,192 @@
+         }
+     }
+ 
++    // macOS Tahoe's user-space USB audio driver does not publish IOAudioEngine
++    // services. Keep the existing VID/PID discovery for older drivers.
++    if devices.is_empty() {
++        return get_goxlr_core_audio_devices();
++    }
+     Ok(devices)
+ }
++
++fn is_physical_goxlr(transport: u32, name: &str, manufacturer: &str, uid: &str) -> bool {
++    if transport != kAudioDeviceTransportTypeUSB
++        || uid.starts_with(AGGREGATE_PREFIX)
++        || uid.starts_with(LEGACY_PREFIX)
++    {
++        return false;
++    }
++    let model_matches = matches!(name, "GoXLR" | "GoXLR Mini");
++    let usb_uid_matches = [
++        "AppleUSBAudioEngine:TC-Helicon:GoXLR:",
++        "AppleUSBAudioEngine:TC-Helicon:GoXLR Mini:",
++    ]
++    .iter()
++    .any(|prefix| {
++        uid.strip_prefix(prefix)
++            .is_some_and(|suffix| !suffix.is_empty())
++    });
++    (model_matches && manufacturer == "TC-Helicon") || usb_uid_matches
++}
++
++fn core_audio_address(selector: u32) -> AudioObjectPropertyAddress {
++    AudioObjectPropertyAddress {
++        mSelector: selector,
++        mScope: kAudioObjectPropertyScopeGlobal,
++        mElement: kAudioObjectPropertyElementMaster,
++    }
++}
++
++fn read_core_audio_numbers(id: AudioObjectID, selector: u32) -> Result<Vec<u32>> {
++    let address = core_audio_address(selector);
++    let mut size = 0u32;
++    let status = unsafe { AudioObjectGetPropertyDataSize(id, &address, 0, null(), &mut size) };
++    if status != kAudioHardwareNoError as i32 || !size.is_multiple_of(4) {
++        bail!("CoreAudio property size error: {status}, size {size}");
++    }
++    if size == 0 {
++        return Ok(Vec::new());
++    }
++    let capacity_bytes = size;
++    let mut values = vec![0u32; size as usize / mem::size_of::<u32>()];
++    let status = unsafe {
++        AudioObjectGetPropertyData(
++            id,
++            &address,
++            0,
++            null(),
++            &mut size,
++            values.as_mut_ptr().cast(),
++        )
++    };
++    if status != kAudioHardwareNoError as i32 || size > capacity_bytes || !size.is_multiple_of(4) {
++        bail!("CoreAudio property read error: {status}, size {size}");
++    }
++    // The device list can shrink between the size and data reads.
++    values.truncate(size as usize / mem::size_of::<u32>());
++    Ok(values)
++}
++
++fn read_core_audio_string(id: AudioObjectID, selector: u32) -> Result<String> {
++    let address = core_audio_address(selector);
++    let mut value: CFStringRef = null();
++    let mut size = mem::size_of::<CFStringRef>() as u32;
++    let status = unsafe {
++        AudioObjectGetPropertyData(
++            id,
++            &address,
++            0,
++            null(),
++            &mut size,
++            (&mut value as *mut CFStringRef).cast(),
++        )
++    };
++    if status != kAudioHardwareNoError as i32 || value.is_null() {
++        bail!("CoreAudio string property read error: {status}");
++    }
++    // CoreAudio transfers ownership of UID/name/manufacturer CFStrings to the caller.
++    let value = unsafe { CFString::wrap_under_create_rule(value) };
++    if size as usize != mem::size_of::<CFStringRef>() {
++        bail!("CoreAudio string property size error: {size}");
++    }
++    Ok(value.to_string())
++}
++
++fn get_goxlr_core_audio_devices() -> Result<Vec<CoreAudioDevice>> {
++    let ids = read_core_audio_numbers(kAudioObjectSystemObject, kAudioHardwarePropertyDevices)?;
++    let mut devices = Vec::new();
++    for id in ids {
++        let Ok(transport) = read_core_audio_numbers(id, kAudioDevicePropertyTransportType) else {
++            continue; // Devices may disappear while the list is being read.
++        };
++        if transport.as_slice() != [kAudioDeviceTransportTypeUSB] {
++            continue;
++        }
++        let Ok(uid) = read_core_audio_string(id, kAudioDevicePropertyDeviceUID) else {
++            continue;
++        };
++        let Ok(name) = read_core_audio_string(id, kAudioObjectPropertyName) else {
++            continue;
++        };
++        let manufacturer =
++            read_core_audio_string(id, kAudioObjectPropertyManufacturer).unwrap_or_default();
++        if is_physical_goxlr(transport[0], &name, &manufacturer, &uid) {
++            devices.push(CoreAudioDevice {
++                display_name: name,
++                uid,
++            });
++        }
++    }
++    Ok(devices)
++}
++
++#[cfg(test)]
++mod tahoe_tests {
++    use super::*;
++
++    #[test]
++    fn accepts_only_full_and_mini_with_verified_usb_identity() {
++        for model in ["GoXLR", "GoXLR Mini"] {
++            assert!(is_physical_goxlr(
++                kAudioDeviceTransportTypeUSB,
++                model,
++                "TC-Helicon",
++                "opaque-uid"
++            ));
++            let uid = format!("AppleUSBAudioEngine:TC-Helicon:{model}:1234000:1,2");
++            assert!(is_physical_goxlr(
++                kAudioDeviceTransportTypeUSB,
++                "renamed device",
++                "",
++                &uid
++            ));
++            assert!(!is_physical_goxlr(0, model, "TC-Helicon", &uid));
++            assert!(!is_physical_goxlr(
++                kAudioDeviceTransportTypeUSB,
++                model,
++                "Other vendor",
++                "opaque-uid"
++            ));
++        }
++    }
++
++    #[test]
++    fn rejects_aggregates_and_similar_names() {
++        for uid in [
++            "GoXLR-Utility::Aggregate::x::System",
++            "com.adecorp.goxlr.system",
++        ] {
++            assert!(!is_physical_goxlr(
++                kAudioDeviceTransportTypeUSB,
++                "GoXLR",
++                "TC-Helicon",
++                uid
++            ));
++        }
++        for model in ["GoXLR Virtual", "GoXLR Miniature", "Not GoXLR"] {
++            let uid = format!("AppleUSBAudioEngine:TC-Helicon:{model}:1234000:1,2");
++            assert!(!is_physical_goxlr(
++                kAudioDeviceTransportTypeUSB,
++                model,
++                "TC-Helicon",
++                &uid
++            ));
++        }
++        assert!(!is_physical_goxlr(
++            kAudioDeviceTransportTypeUSB,
++            "Other",
++            "",
++            "AppleUSBAudioEngine:TC-Helicon:GoXLR:"
++        ));
++    }
++
++    #[test]
++    #[ignore = "requires a connected GoXLR; reads properties without changing audio or USB"]
++    fn discovers_connected_goxlr_read_only() {
++        let devices = get_goxlr_core_audio_devices().expect("CoreAudio enumeration");
++        assert!(!devices.is_empty(), "No physical USB GoXLR detected");
++        for device in devices {
++            println!("Detected physical device: {}", device.display_name);
++        }
++    }
++}
