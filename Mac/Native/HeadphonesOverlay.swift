@@ -38,6 +38,7 @@ private final class HeadphonesPanel: NSPanel {
         dismissTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 1_100_000_000) }
             catch { return }
+            guard !Task.isCancelled else { return }
             self?.panel.orderOut(nil)
         }
     }
