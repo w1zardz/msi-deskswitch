@@ -6,6 +6,7 @@ param(
     [string]$ShortcutPath = (Join-Path ([Environment]::GetFolderPath('Startup')) 'GoXLR Utility.lnk')
 )
 $ErrorActionPreference = 'Stop'
+$script:GoXlrStartupSource = Join-Path $PSScriptRoot 'GoXlrStartupShortcut.cs'
 
 function Get-GoXlrStartupArguments([string]$UtilityConfigPath) {
     $taskConfig = [IO.Path]::GetFullPath($UtilityConfigPath)
@@ -41,10 +42,10 @@ function Set-GoXlrStartupShortcut([string]$UtilityExe, [string]$UtilityConfigPat
     }
     $taskLink = [IO.Path]::GetFullPath($ShortcutPath)
     if ([IO.Path]::GetExtension($taskLink) -ine '.lnk') { throw 'Ярлык должен иметь расширение .lnk.' }
-    $taskShell = New-Object -ComObject WScript.Shell
+    if (-not ('DeskSwitch.GoXlrStartupShortcut' -as [type])) { Add-Type -Path $script:GoXlrStartupSource }
     if (Test-Path -LiteralPath $taskLink) {
-        $taskOld = $taskShell.CreateShortcut($taskLink)
-        if ($taskOld.TargetPath -ieq $taskExe -and $taskOld.Arguments -ceq $taskArguments) {
+        $taskOld = [DeskSwitch.GoXlrStartupShortcut]::Read($taskLink)
+        if ($taskOld[0] -ieq $taskExe -and $taskOld[1] -ceq $taskArguments) {
             Write-Output "Автозапуск уже использует выбранный конфиг: $taskLink"
             return
         }
@@ -52,14 +53,9 @@ function Set-GoXlrStartupShortcut([string]$UtilityExe, [string]$UtilityConfigPat
         Copy-Item -LiteralPath $taskLink -Destination $taskBackup
     }
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $taskLink))
-    $taskShortcut = $taskShell.CreateShortcut($taskLink)
-    $taskShortcut.TargetPath = $taskExe
-    $taskShortcut.Arguments = $taskArguments
-    $taskShortcut.WorkingDirectory = Split-Path -Parent $taskExe
-    $taskShortcut.Description = 'GoXLR Utility with the saved DeskSwitch profiles'
-    $taskShortcut.Save()
-    $taskCheck = $taskShell.CreateShortcut($taskLink)
-    if ($taskCheck.TargetPath -ine $taskExe -or $taskCheck.Arguments -cne $taskArguments) { throw 'Не удалось проверить сохранённый ярлык.' }
+    [DeskSwitch.GoXlrStartupShortcut]::Write($taskLink, $taskExe, $taskArguments)
+    $taskCheck = [DeskSwitch.GoXlrStartupShortcut]::Read($taskLink)
+    if ($taskCheck[0] -ine $taskExe -or $taskCheck[1] -cne $taskArguments) { throw 'Не удалось проверить сохранённый ярлык.' }
     Write-Output "Автозапуск настроен. Для первого запуска открой: $taskLink"
     Write-Output 'Если Utility уже работает с другим конфигом, закрой её через меню и открой этот ярлык. Профили и работающие программы помощник не меняет.'
 }

@@ -23,16 +23,14 @@ try {
     $taskJson = @{profile_directory=$taskData; mic_profile_directory=$taskData; devices=@{TEST=@{profile='Selected'; mic_profile='Selected Mic'}}} | ConvertTo-Json -Depth 5
     [IO.File]::WriteAllText($taskConfig, $taskJson, $taskEncoding)
     Set-GoXlrStartupShortcut $taskExe $taskConfig $taskLink | Out-Null
-    $taskShell = New-Object -ComObject WScript.Shell
-    $taskSaved = $taskShell.CreateShortcut($taskLink)
-    Assert ($taskSaved.TargetPath -ieq $taskExe) 'Wrong executable in startup.'
-    Assert ($taskSaved.Arguments -ceq ('--config "' + $taskConfig + '"')) 'Spaces or Unicode changed the explicit config argument.'
+    $taskSaved = [DeskSwitch.GoXlrStartupShortcut]::Read($taskLink)
+    Assert ($taskSaved[0] -ieq $taskExe) 'Wrong executable in startup.'
+    Assert ($taskSaved[1] -ceq ('--config "' + $taskConfig + '"')) 'Spaces or Unicode changed the explicit config argument.'
     $taskHash = (Get-FileHash -LiteralPath $taskLink).Hash
     Set-GoXlrStartupShortcut $taskExe $taskConfig $taskLink | Out-Null
     Assert ((Get-FileHash -LiteralPath $taskLink).Hash -ceq $taskHash) 'Repeated setup changed a correct shortcut.'
     Assert ([IO.File]::ReadAllText($taskConfig) -ceq $taskJson) 'Startup setup changed profile settings.'
-    $taskSaved.Arguments = ''
-    $taskSaved.Save()
+    [DeskSwitch.GoXlrStartupShortcut]::Write($taskLink, $taskExe, '')
     $taskOldHash = (Get-FileHash -LiteralPath $taskLink).Hash
     Set-GoXlrStartupShortcut $taskExe $taskConfig $taskLink | Out-Null
     $taskBackups = @(Get-ChildItem -LiteralPath $taskData -Filter 'startup-before-*.lnk')
