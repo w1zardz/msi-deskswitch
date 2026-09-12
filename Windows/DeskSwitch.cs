@@ -120,6 +120,7 @@ internal sealed class Tray : ApplicationContext {
     bool audioUpdateError;
     string audioHookError;
     string lastAudioError;
+    string lastOverlayError;
     readonly System.Windows.Forms.Timer wheelTimer = new System.Windows.Forms.Timer {Interval=1500};
     public Tray() {
         dispatch.CreateControl();
@@ -194,7 +195,14 @@ internal sealed class Tray : ApplicationContext {
             audioUpdateRevision=update.Revision; audioUpdateError=update.Error;
             audioMixers=update.Mixers; UpdateAudioMenu();
             if(update.Error || !audio.OwnsVolumeKeys) volumeOverlay.Dismiss();
-            else if(volumeHook!=null && update.ConfirmedHeadphones.HasValue) volumeOverlay.ShowLevel(update.ConfirmedHeadphones.Value);
+            else if(volumeHook!=null && update.ConfirmedHeadphones.HasValue) {
+                try {volumeOverlay.ShowLevel(update.ConfirmedHeadphones.Value); lastOverlayError=null;}
+                catch(Win32Exception error) {
+                    volumeOverlay.Dismiss();
+                    if(error.Message!=lastOverlayError) Program.Log("Volume overlay: "+error.Message);
+                    lastOverlayError=error.Message;
+                }
+            }
             if(update.Error && update.Status!=lastAudioError) {
                 Program.Log("GoXLR: "+update.Status);
                 if(audio.Settings.Enabled) icon.ShowBalloonTip(6000,"GoXLR · Headphones",update.Status,ToolTipIcon.Warning);

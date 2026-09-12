@@ -1,10 +1,13 @@
 using System;
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 // One passive window, reused for each acknowledged GoXLR volume gesture.
 internal sealed class HeadphonesOverlay : Form {
+    [DllImport("user32.dll",SetLastError=true)] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
     readonly Timer dismiss = new Timer {Interval=1100};
     readonly Font caption = new Font("Segoe UI",11,FontStyle.Bold);
     readonly float scale;
@@ -48,6 +51,11 @@ internal sealed class HeadphonesOverlay : Form {
         Location=new Point(area.Left+(area.Width-Width)/2,area.Bottom-Height-Px(48));
         Invalidate();
         if(!Visible) Show();
+        // TopMost alone does not raise an already visible window above other topmost windows.
+        // SHOWWINDOW also makes the native window visible after a hidden background launch.
+        if(!SetWindowPos(Handle,new IntPtr(-1),0,0,0,0,0x0253))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),"Не удалось показать шкалу громкости.");
+        Update();
         dismiss.Stop();
         dismiss.Start();
     }
