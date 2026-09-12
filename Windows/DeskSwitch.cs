@@ -107,11 +107,15 @@ internal sealed class Tray : ApplicationContext {
     string lastWheelStatus;
     readonly GoXlrAudio audio;
     readonly GoXlrVolumeHook volumeHook;
-    readonly ToolStripMenuItem audioEnabled = new ToolStripMenuItem("Ручка → Headphones GoXLR");
+    readonly ToolStripMenuItem audioMenu = new ToolStripMenuItem("Крутилка: громкость Windows");
+    readonly ToolStripMenuItem audioEnabled = new ToolStripMenuItem("Крутилка → Headphones GoXLR");
     readonly ToolStripMenuItem audioStatus = new ToolStripMenuItem("GoXLR Utility: проверка…") {Enabled=false};
     readonly ToolStripMenuItem audioDevices = new ToolStripMenuItem("Выбрать GoXLR по serial");
     readonly ToolStripMenuItem audioPort = new ToolStripMenuItem();
     GoXlrMixer[] audioMixers = new GoXlrMixer[0];
+    long audioUpdateRevision = -1;
+    bool audioUpdateError;
+    string audioHookError;
     string lastAudioError;
     readonly System.Windows.Forms.Timer wheelTimer = new System.Windows.Forms.Timer {Interval=1500};
     public Tray() {
@@ -120,14 +124,13 @@ internal sealed class Tray : ApplicationContext {
         menu.Items.Add("MacBook — PageDown", null, delegate { Switch(16); });
         menu.Items.Add("Windows — DisplayPort", null, delegate { Switch(15); });
         menu.Items.Add("Восстановить прокрутку MX Master 3S", null, delegate { RepairWheel(); });
-        var audioMenu=new ToolStripMenuItem("GoXLR Utility · Headphones");
         audioMenu.DropDownItems.Add(audioStatus);
         audioMenu.DropDownItems.Add(audioEnabled);
         audioMenu.DropDownItems.Add(audioDevices);
         audioMenu.DropDownItems.Add(audioPort);
         audioMenu.DropDownItems.Add("Обновить устройства и статус",null,delegate {audio.Refresh();});
         audioMenu.DropDownItems.Add("О подключении GoXLR Utility…",null,delegate {
-            MessageBox.Show("Ручка и клавиши Volume +/−/Mute меняют только Headphones выбранного GoXLR. Шаг — около 2%.\n\nНужен уже настроенный и запущенный GoXLR Utility с локальным HTTP API. Это подключение использует API GoXLR Utility. DeskSwitch не устанавливает и не запускает Utility: первый запуск Utility может загрузить профиль в устройство.\n\nВыбери serial, затем включи ручку. Пока функция выключена, клавиши работают обычно. Если функция включена, но GoXLR недоступен, системная громкость не меняется.\n\nMute возвращает прежний уровень только в текущем подключении. После ошибки, отключения или смены настроек сохранённый уровень сбрасывается.","GoXLR Utility · Headphones",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            MessageBox.Show("Поворот крутилки NuPhy меняет только Headphones выбранного GoXLR. Шаг — около 2%. Нажатие остаётся Delete и не выключает звук. Отдельные клавиши Volume +/−/Mute тоже управляют Headphones.\n\nНужен уже настроенный и запущенный GoXLR Utility с локальным HTTP API. Это подключение использует API GoXLR Utility. DeskSwitch не устанавливает и не запускает Utility: первый запуск Utility может загрузить профиль в устройство.\n\nВыбери serial, затем включи крутилку. Пока функция выключена, клавиши работают обычно. Если функция включена, но GoXLR недоступен, системная громкость не меняется.\n\nОтдельная команда Mute возвращает прежний уровень только в текущем подключении. После ошибки, отключения или смены настроек сохранённый уровень сбрасывается.","GoXLR Utility · Headphones",MessageBoxButtons.OK,MessageBoxIcon.Information);
         });
         menu.Items.Add(audioMenu);
         menu.Items.Add(new ToolStripSeparator());
@@ -140,6 +143,7 @@ internal sealed class Tray : ApplicationContext {
         audio=new GoXlrAudio(audioSettings,AudioUpdate);
         try {volumeHook=new GoXlrVolumeHook(audio);}
         catch(Exception error) {
+            audioHookError=error.Message;
             audioSettings.Enabled=false; audio.Configure(audioSettings);
             audioStatus.Text=error.Message; Program.Log("GoXLR hook: "+error.Message);
         }
@@ -147,6 +151,7 @@ internal sealed class Tray : ApplicationContext {
             var value=audio.Settings; value.Enabled=!value.Enabled; SaveAudio(value);
         };
         audioPort.Click += delegate {ChooseAudioPort();};
+        menu.Opening += delegate {UpdateAudioMenu();};
         UpdateAudioMenu(); audio.Refresh();
         SystemEvents.PowerModeChanged += PowerChanged;
         SystemEvents.SessionSwitch += SessionChanged;
@@ -176,7 +181,9 @@ internal sealed class Tray : ApplicationContext {
         if(dispatch.IsDisposed) return;
         try {dispatch.BeginInvoke((Action)delegate {
             if(dispatch.IsDisposed || update.Revision!=audio.Revision) return;
-            audioStatus.Text=update.Status; audioMixers=update.Mixers; UpdateAudioMenu();
+            audioStatus.Text=audioHookError??update.Status;
+            audioUpdateRevision=update.Revision; audioUpdateError=update.Error;
+            audioMixers=update.Mixers; UpdateAudioMenu();
             if(update.Error && update.Status!=lastAudioError) {
                 Program.Log("GoXLR: "+update.Status);
                 if(audio.Settings.Enabled) icon.ShowBalloonTip(6000,"GoXLR · Headphones",update.Status,ToolTipIcon.Warning);
@@ -199,6 +206,12 @@ internal sealed class Tray : ApplicationContext {
         }
         if(value.Serial.Length>0 && !found) audioDevices.DropDownItems.Add(new ToolStripMenuItem(value.Serial+" · не подключён") {Checked=true,Enabled=false});
         if(audioMixers.Length==0) audioDevices.DropDownItems.Add(new ToolStripMenuItem("Устройств нет — проверь GoXLR Utility") {Enabled=false});
+        if(volumeHook==null) audioMenu.Text="Крутилка: клавиши GoXLR не подключены";
+        else if(!value.Enabled) audioMenu.Text="Крутилка: громкость Windows";
+        else if(!audio.OwnsVolumeKeys) audioMenu.Text="Крутилка: GoXLR на паузе";
+        else if(audioUpdateRevision!=audio.Revision) audioMenu.Text="Крутилка: проверка GoXLR…";
+        else if(audioUpdateError || !found) audioMenu.Text="Крутилка: GoXLR недоступен";
+        else audioMenu.Text="Крутилка: Headphones GoXLR";
     }
     void SaveAudio(GoXlrSettings value) {
         try {
