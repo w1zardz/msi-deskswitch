@@ -120,6 +120,7 @@ internal sealed class Tray : ApplicationContext {
     bool audioUpdateError;
     string audioHookError;
     string lastAudioError;
+    string lastAudioNotification;
     string lastOverlayError;
     readonly System.Windows.Forms.Timer wheelTimer = new System.Windows.Forms.Timer {Interval=1500};
     public Tray() {
@@ -205,8 +206,11 @@ internal sealed class Tray : ApplicationContext {
             }
             if(update.Error && update.Status!=lastAudioError) {
                 Program.Log("GoXLR: "+update.Status);
-                if(audio.Settings.Enabled) icon.ShowBalloonTip(6000,"GoXLR · Headphones",update.Status,ToolTipIcon.Warning);
             }
+            if(update.NotifyError && update.Status!=lastAudioNotification && audio.Settings.Enabled) {
+                icon.ShowBalloonTip(6000,"GoXLR · Headphones",update.Status,ToolTipIcon.Warning);
+                lastAudioNotification=update.Status;
+            } else if(!update.Error) lastAudioNotification=null;
             lastAudioError=update.Error?update.Status:null;
         });} catch(InvalidOperationException) { }
     }
@@ -308,7 +312,7 @@ internal sealed class Tray : ApplicationContext {
 internal static class Program {
     public static void Log(string message) {
         try {
-            string dir=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"MSI-DeskSwitch");
+            string dir=DeskSwitchStorage.DirectoryPath;
             Directory.CreateDirectory(dir);
             string file=Path.Combine(dir,"status.log");
             if (File.Exists(file) && new FileInfo(file).Length>1048576) File.WriteAllText(file,"");
@@ -335,7 +339,7 @@ internal static class Program {
             using (var mutex=new Mutex(true,@"Local\MSI322UPF-DeskSwitch-Tray",out created)) {
                 if (!created) return 0;
                 Application.EnableVisualStyles();
-                using (var tray=new Tray()) { Log("Ready. PageDown -> MacBook; Ctrl+Shift+F11 backup."); Application.Run(tray); }
+                using (var tray=new Tray()) { Log("Ready. PageDown -> MacBook; Ctrl+Shift+F11 backup. Settings: "+DeskSwitchStorage.DirectoryPath); Application.Run(tray); }
             }
             return 0;
         } catch (Exception error) {

@@ -1,11 +1,16 @@
 $ErrorActionPreference = 'Stop'
 $taskSource = Join-Path $PSScriptRoot 'DeskSwitch.exe'
 if (-not (Test-Path -LiteralPath $taskSource)) { & (Join-Path $PSScriptRoot 'Build.ps1') }
-$taskInstall = Join-Path $env:LOCALAPPDATA 'MSI-DeskSwitch'
+$taskInstall = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.deskswitch'
 New-Item -ItemType Directory -Path $taskInstall -Force | Out-Null
 $taskTarget = Join-Path $taskInstall 'DeskSwitch.exe'
-if (Get-Process -Name DeskSwitch -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $taskTarget }) {
+if (Get-Process -Name DeskSwitch -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq [Diagnostics.Process]::GetCurrentProcess().SessionId }) {
     throw 'DeskSwitch is already running. Use Exit in its tray menu before updating.'
+}
+$taskSettings = Join-Path $taskInstall 'goxlr.json'
+$taskLegacySettings = Join-Path $env:LOCALAPPDATA 'MSI-DeskSwitch\goxlr.json'
+if (-not (Test-Path -LiteralPath $taskSettings) -and (Test-Path -LiteralPath $taskLegacySettings)) {
+    Copy-Item -LiteralPath $taskLegacySettings -Destination $taskSettings
 }
 Copy-Item -LiteralPath $taskSource -Destination $taskTarget -Force
 $taskShell = New-Object -ComObject WScript.Shell

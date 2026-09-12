@@ -7,6 +7,17 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 
+internal static class DeskSwitchStorage {
+    // AppData can be redirected to a packaged launcher's private copy. UserProfile is shared
+    // by a manual launch and Windows Startup, so both processes see the same configuration.
+    public static string DirectoryPath {
+        get {return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),".deskswitch");}
+    }
+    public static string LegacyDirectoryPath {
+        get {return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"MSI-DeskSwitch");}
+    }
+}
+
 internal sealed class GoXlrSettings {
     public bool Enabled { get; set; }
     public string Serial { get; set; }
@@ -20,11 +31,15 @@ internal sealed class GoXlrSettings {
         if (Enabled && Serial.Length==0) throw new Exception("Сначала явно выбери GoXLR по serial.");
     }
     static string FilePath {
-        get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"MSI-DeskSwitch","goxlr.json"); }
+        get { return Path.Combine(DeskSwitchStorage.DirectoryPath,"goxlr.json"); }
     }
     public static GoXlrSettings Load() {
-        if (!File.Exists(FilePath)) return new GoXlrSettings();
-        var settings=new JavaScriptSerializer().Deserialize<GoXlrSettings>(File.ReadAllText(FilePath));
+        return LoadFrom(FilePath,Path.Combine(DeskSwitchStorage.LegacyDirectoryPath,"goxlr.json"));
+    }
+    internal static GoXlrSettings LoadFrom(string preferred,string legacy) {
+        string path=File.Exists(preferred)?preferred:legacy;
+        if (!File.Exists(path)) return new GoXlrSettings();
+        var settings=new JavaScriptSerializer().Deserialize<GoXlrSettings>(File.ReadAllText(path));
         if (settings==null) throw new Exception("Пустые настройки GoXLR.");
         settings.Validate(); return settings;
     }
@@ -155,6 +170,8 @@ internal sealed class GoXlrUpdate {
     public long Revision;
     public string Status;
     public bool Error;
+    // Background discovery and expected USB recovery update the menu without a balloon.
+    public bool NotifyError;
     public GoXlrMixer[] Mixers;
     // Present only after a user's volume command was acknowledged (or hit a known limit).
     public int? ConfirmedHeadphones;
@@ -169,6 +186,7 @@ internal sealed class GoXlrAudio : IDisposable {
     readonly Thread worker;
     readonly Action<GoXlrUpdate> notify;
     readonly Func<int,IGoXlrApi> createApi;
+    readonly int retryDelayMilliseconds,retryLimit;
     GoXlrSettings settings;
     GoXlrOperation active;
     GoXlrMixer[] mixers=new GoXlrMixer[0];
@@ -176,10 +194,16 @@ internal sealed class GoXlrAudio : IDisposable {
     long revision;
     long keyResetRevision;
     bool disposed,powerSuspended,sessionSuspended;
+    bool recovering;
+    int retriesRemaining;
+    DateTime retryAtUtc=DateTime.MinValue;
     bool Suspended {get {return powerSuspended || sessionSuspended;}}
     public GoXlrAudio(GoXlrSettings value,Action<GoXlrUpdate> update) : this(value,update,delegate(int port){return new GoXlrApi(port);}) { }
-    internal GoXlrAudio(GoXlrSettings value,Action<GoXlrUpdate> update,Func<int,IGoXlrApi> factory) {
+    internal GoXlrAudio(GoXlrSettings value,Action<GoXlrUpdate> update,Func<int,IGoXlrApi> factory) : this(value,update,factory,1500,12) { }
+    internal GoXlrAudio(GoXlrSettings value,Action<GoXlrUpdate> update,Func<int,IGoXlrApi> factory,int retryDelay,int retryCount) {
+        if(retryDelay<1 || retryCount<0) throw new ArgumentOutOfRangeException("retryDelay/retryCount");
         value.Validate(); settings=value.Copy(); notify=update; createApi=factory;
+        retryDelayMilliseconds=retryDelay; retryLimit=retryCount;
         worker=new Thread(Run) {IsBackground=true,Name="GoXLR Headphones"}; worker.Start();
     }
     public GoXlrSettings Settings { get { lock(gate) {return settings.Copy();} } }
@@ -193,6 +217,7 @@ internal sealed class GoXlrAudio : IDisposable {
     }
     void ClearLocked() {
         revision++;
+        StopRecoveryLocked();
         queue.Clear(); restoreVolume=null;
         if(active!=null) active.Cancel();
         if(active==null) idle.Set();
@@ -225,10 +250,17 @@ internal sealed class GoXlrAudio : IDisposable {
     public void Refresh() {
         lock(gate) {
             if(disposed || Suspended) return;
-            foreach(var item in queue) if(item.Refresh) return;
-            queue.AddLast(new Work {Refresh=true}); idle.Reset();
+            recovering=true; retriesRemaining=retryLimit; retryAtUtc=DateTime.MinValue;
+            QueueRefreshLocked();
         }
         wake.Set();
+    }
+    void QueueRefreshLocked() {
+        foreach(var item in queue) if(item.Refresh) return;
+        queue.AddLast(new Work {Refresh=true}); idle.Reset();
+    }
+    void StopRecoveryLocked() {
+        recovering=false; retriesRemaining=0; retryAtUtc=DateTime.MinValue;
     }
     public void VolumeKey(int key) {VolumeKey(key,-1);}
     internal void VolumeKey(int key,long expectedRevision) {
@@ -243,18 +275,29 @@ internal sealed class GoXlrAudio : IDisposable {
         }
         wake.Set();
     }
-    void Publish(GoXlrOperation operation,string status,bool error,int? confirmedHeadphones=null) {
+    void Publish(GoXlrOperation operation,string status,bool error,int? confirmedHeadphones=null,bool notifyError=false) {
         GoXlrUpdate update;
         lock(gate) {
             if(disposed || (operation!=null && operation!=active)) return;
             if(operation!=null) { try {operation.ThrowIfCancelled();} catch(OperationCanceledException) {return;} }
-            update=new GoXlrUpdate {Revision=revision,Status=status,Error=error,Mixers=mixers,ConfirmedHeadphones=confirmedHeadphones};
+            update=new GoXlrUpdate {Revision=revision,Status=status,Error=error,NotifyError=error && notifyError,Mixers=mixers,ConfirmedHeadphones=confirmedHeadphones};
         }
         notify(update);
     }
     void Run() {
         while(true) {
-            wake.WaitOne();
+            int wait;
+            lock(gate) {
+                if(disposed) return;
+                wait=retryAtUtc==DateTime.MinValue?Timeout.Infinite:(int)Math.Max(0,Math.Min(retryDelayMilliseconds,Math.Ceiling((retryAtUtc-DateTime.UtcNow).TotalMilliseconds)));
+            }
+            wake.WaitOne(wait);
+            lock(gate) {
+                if(disposed) return;
+                if(!Suspended && retryAtUtc!=DateTime.MinValue && DateTime.UtcNow>=retryAtUtc) {
+                    retryAtUtc=DateTime.MinValue; QueueRefreshLocked();
+                }
+            }
             // Coalesce a short burst; opposite directions and mute retain their order.
             Thread.Sleep(25);
             while(true) {
@@ -276,6 +319,7 @@ internal sealed class GoXlrAudio : IDisposable {
                     if(work.Refresh) {
                         string text=selected==null?"GoXLR Utility: выбери устройство по serial.":"Headphones: "+Math.Round(selected.Headphones*100.0/255)+"% · "+config.Serial;
                         if(!config.Enabled) text="Ручка GoXLR выключена. "+text;
+                        lock(gate) {operation.ThrowIfCancelled(); StopRecoveryLocked();}
                         Publish(operation,text,false); continue;
                     }
                     if(!config.Enabled || selected==null) continue;
@@ -283,6 +327,7 @@ internal sealed class GoXlrAudio : IDisposable {
                     if(work.Mute) {
                         int? saved; lock(gate) {operation.ThrowIfCancelled(); saved=restoreVolume;}
                         if(current==0 && !saved.HasValue) {
+                            lock(gate) {operation.ThrowIfCancelled(); StopRecoveryLocked();}
                             Publish(operation,"Headphones уже 0%. Нет сохранённого уровня — громкость не повышена.",false,0); continue;
                         }
                         target=current>0?0:saved.Value;
@@ -296,15 +341,23 @@ internal sealed class GoXlrAudio : IDisposable {
                         }
                     }
                     selected.Headphones=target;
+                    lock(gate) {operation.ThrowIfCancelled(); StopRecoveryLocked();}
                     Publish(operation,"Headphones: "+Math.Round(target*100.0/255)+"% · "+config.Serial,false,target);
                 } catch(OperationCanceledException) { }
                 catch(Exception error) {
-                    bool current;
+                    bool current,notifyError=false;
                     lock(gate) {
                         try {operation.ThrowIfCancelled(); current=true;} catch(OperationCanceledException) {current=false;}
-                        if(current) {queue.Clear(); restoreVolume=null;}
+                        if(current) {
+                            notifyError=!work.Refresh && !recovering;
+                            queue.Clear(); restoreVolume=null; mixers=new GoXlrMixer[0];
+                            // Recovery only re-reads status. A failed volume write is never replayed.
+                            if(recovering && retriesRemaining>0) {
+                                retriesRemaining--; retryAtUtc=DateTime.UtcNow.AddMilliseconds(retryDelayMilliseconds);
+                            } else StopRecoveryLocked();
+                        }
                     }
-                    if(current) Publish(operation,error.Message+" Системная громкость не изменена.",true);
+                    if(current) Publish(operation,error.Message+" Системная громкость не изменена.",true,null,notifyError);
                 } finally {
                     lock(gate) {if(active==operation) active=null; if(queue.Count==0) idle.Set();}
                 }

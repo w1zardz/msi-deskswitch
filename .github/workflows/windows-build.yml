@@ -29,6 +29,9 @@ jobs:
       - name: Test GoXLR profile import
         shell: powershell
         run: .\Windows\Test-GoXlrImport.ps1
+      - name: Test GoXLR startup configuration
+        shell: powershell
+        run: .\Windows\Test-GoXlrStartup.ps1
       - name: Test OBS and GoXLR audio diagnostics
         shell: powershell
         run: .\Windows\Test-AudioSetupExport.ps1

@@ -18,6 +18,7 @@ internal sealed class FakeGoXlr : IGoXlrApi {
     public readonly ManualResetEvent ReleaseSet=new ManualResetEvent(false);
     public bool BlockNextSet;
     public int SetAttempts;
+    public int StatusAttempts,FailStatusCount;
     public int Level(string serial) {lock(gate) {return levels[serial];}}
     public void Level(string serial,int value) {lock(gate) {levels[serial]=value;}}
     public void Remove(string serial) {lock(gate) {levels.Remove(serial);}}
@@ -25,6 +26,8 @@ internal sealed class FakeGoXlr : IGoXlrApi {
         var snapshot=new List<GoXlrMixer>();
         bool block;
         lock(gate) {
+            StatusAttempts++;
+            if(FailStatusCount>0) {FailStatusCount--; throw new Exception("offline");}
             if(FailNextStatus) {FailNextStatus=false; throw new Exception("offline");}
             foreach(var pair in levels) snapshot.Add(new GoXlrMixer {Serial=pair.Key,Name="GoXLR",Headphones=pair.Value});
             block=BlockNextStatus; BlockNextStatus=false;
@@ -57,6 +60,26 @@ internal static class GoXlrTests {
     static GoXlrAudio Engine(FakeGoXlr fake) {return new GoXlrAudio(Config(),delegate(GoXlrUpdate update){},delegate(int port){return fake;});}
     static void Idle(GoXlrAudio audio) {Check(audio.WaitForIdle(5000),"Worker did not become idle.");}
     static string Status(string value) {return "{\"Status\":{\"mixers\":{\"A\":{\"hardware\":{\"serial_number\":\"A\",\"device_type\":\"Full\"},\"levels\":{\"volumes\":{\"Headphones\":"+value+"}}}}}}";}
+    static void StoredConfiguration() {
+        string fixture=Path.Combine(Path.GetTempPath(),"DeskSwitch-storage-tests-"+Guid.NewGuid().ToString("N"));
+        string preferred=Path.Combine(fixture,"stable.json"),legacy=Path.Combine(fixture,"legacy.json");
+        Directory.CreateDirectory(fixture);
+        try {
+            var missing=GoXlrSettings.LoadFrom(preferred,legacy);
+            Check(!missing.Enabled && missing.Serial=="","Missing settings enabled an unselected GoXLR.");
+            const string saved="{\"Enabled\":true,\"Serial\":\"SAVED\",\"Port\":14564}";
+            File.WriteAllText(legacy,saved);
+            Check(GoXlrSettings.LoadFrom(preferred,legacy).Serial=="SAVED","Existing legacy settings were not available for migration.");
+            File.WriteAllText(preferred,saved);
+            File.WriteAllText(legacy,"{\"Enabled\":false,\"Serial\":\"OTHER\",\"Port\":14565}");
+            var first=GoXlrSettings.LoadFrom(preferred,legacy);
+            var restarted=GoXlrSettings.LoadFrom(preferred,legacy);
+            Check(first.Enabled && restarted.Enabled && restarted.Serial=="SAVED" && restarted.Port==14564,"An independent startup replaced the stable configuration with a legacy copy.");
+            Check(File.ReadAllText(preferred)==saved,"Loading settings changed the saved file.");
+            File.WriteAllText(preferred,"not json");
+            Throws(delegate {GoXlrSettings.LoadFrom(preferred,legacy);},"Invalid stable settings silently fell back to another configuration.");
+        } finally {File.Delete(preferred); File.Delete(legacy); Directory.Delete(fixture);}
+    }
     static void Protocol() {
         var mixers=GoXlrApi.ParseMixers(GoXlrApi.Parse(Status("128")));
         Check(mixers.Length==1 && mixers[0].Serial=="A" && mixers[0].Headphones==128,"Valid status did not parse.");
@@ -184,6 +207,7 @@ internal static class GoXlrTests {
         }
     }
     static void Failures() {
+        Cancellation(delegate(GoXlrAudio audio){audio.HardwareChanged();},"USB switch");
         Cancellation(delegate(GoXlrAudio audio){var c=audio.Settings;c.Enabled=false;audio.Configure(c);},"disable");
         Cancellation(delegate(GoXlrAudio audio){var c=audio.Settings;c.Serial="B";audio.Configure(c);},"serial change");
         Cancellation(delegate(GoXlrAudio audio){var c=audio.Settings;c.Port=14565;audio.Configure(c);},"port change");
@@ -300,8 +324,59 @@ internal static class GoXlrTests {
             Check(updates.TrueForAll(delegate(GoXlrUpdate update){return !update.ConfirmedHeadphones.HasValue;}),"Old-device gesture displayed a volume after selection changed.");
         }
     }
+    static void Eventually(Func<bool> condition,string message) {
+        var elapsed=Stopwatch.StartNew();
+        while(!condition() && elapsed.ElapsedMilliseconds<3000) Thread.Sleep(10);
+        Check(condition(),message);
+    }
+    static void Reconnection() {
+        var fake=new FakeGoXlr {FailStatusCount=2};
+        var updates=new List<GoXlrUpdate>();
+        using(var audio=new GoXlrAudio(Config(),delegate(GoXlrUpdate u){lock(updates) {updates.Add(u);}},delegate(int p){return fake;},35,3)) {
+            audio.HardwareChanged();
+            Eventually(delegate {lock(updates) {return updates.Exists(delegate(GoXlrUpdate u){return !u.Error;});}},"USB recovery did not discover the returning mixer automatically.");
+            Idle(audio);
+            Check(fake.StatusAttempts==3 && fake.SetAttempts==0,"Recovery must only read status until the mixer returns.");
+            lock(updates) {
+                Check(updates.Count==3 && updates[0].Error && updates[1].Error && !updates[2].Error,"Transient USB errors did not clear after recovery.");
+                Check(updates.TrueForAll(delegate(GoXlrUpdate u){return !u.NotifyError && !u.ConfirmedHeadphones.HasValue;}),"Background recovery opened a warning or volume overlay.");
+            }
+            Thread.Sleep(150);
+            Check(fake.StatusAttempts==3,"Healthy GoXLR remained under periodic polling.");
+            fake.FailNextStatus=true; audio.VolumeKey(0xAF); Idle(audio);
+            lock(updates) {Check(updates[updates.Count-1].NotifyError,"A real gesture failure outside USB recovery was hidden.");}
+        }
+        fake=new FakeGoXlr {FailStatusCount=50}; updates.Clear();
+        using(var audio=new GoXlrAudio(Config(),delegate(GoXlrUpdate u){lock(updates) {updates.Add(u);}},delegate(int p){return fake;},35,2)) {
+            audio.Refresh();
+            Eventually(delegate {lock(updates) {return updates.Count>=3;}},"Offline background retry budget never completed.");
+            Idle(audio); Thread.Sleep(150);
+            Check(fake.StatusAttempts==3 && fake.SetAttempts==0,"Offline retries exceeded their limit or changed volume.");
+            lock(updates) {Check(updates.TrueForAll(delegate(GoXlrUpdate u){return u.Error && !u.NotifyError && u.Mixers.Length==0;}),"Expected absence raised a balloon or kept stale mixers.");}
+            audio.VolumeKey(0xAF); Idle(audio);
+            lock(updates) {Check(updates[updates.Count-1].NotifyError,"Gesture failure stayed hidden after retry budget expired.");}
+        }
+        fake=new FakeGoXlr {FailStatusCount=50}; updates.Clear();
+        using(var audio=new GoXlrAudio(Config(),delegate(GoXlrUpdate u){lock(updates) {updates.Add(u);}},delegate(int p){return fake;},200,2)) {
+            audio.HardwareChanged(); Idle(audio);
+            audio.VolumeKey(0xAF); Idle(audio);
+            lock(updates) {Check(updates.TrueForAll(delegate(GoXlrUpdate u){return !u.NotifyError;}),"A gesture during expected USB recovery raised a warning.");}
+            Check(fake.SetAttempts==0,"An unavailable-device gesture wrote volume.");
+            audio.Suspend(true); int before=fake.StatusAttempts; Thread.Sleep(260);
+            Check(fake.StatusAttempts==before,"Suspension left a retry active.");
+            fake.FailStatusCount=0; audio.Suspend(false); Idle(audio);
+            Check(fake.SetAttempts==0,"Returning USB replayed a failed gesture.");
+            fake.FailStatusCount=50; audio.HardwareChanged(); Idle(audio);
+            fake.FailStatusCount=0; var config=audio.Settings; config.Serial="B"; audio.Configure(config); Idle(audio);
+            before=fake.StatusAttempts; Thread.Sleep(260);
+            Check(fake.StatusAttempts==before && fake.SetAttempts==0,"A previous serial's retry survived reconfiguration.");
+            fake.FailStatusCount=50; audio.HardwareChanged(); Idle(audio);
+        }
+        int stopped=fake.StatusAttempts; Thread.Sleep(260);
+        Check(fake.StatusAttempts==stopped,"Disposal left a background retry running.");
+    }
     public static int Main() {
-        try {Protocol(); Http(); QueueAndClamp(); Mute(); Failures(); SessionLifecycle(); KeyEpochs(); KeyOwnership(); VolumeFeedback(); Console.WriteLine("GoXLR: "+count+" checks passed."); return 0;}
+        try {StoredConfiguration(); Protocol(); Http(); QueueAndClamp(); Mute(); Failures(); SessionLifecycle(); KeyEpochs(); KeyOwnership(); VolumeFeedback(); Reconnection(); Console.WriteLine("GoXLR: "+count+" checks passed."); return 0;}
         catch(Exception error) {Console.Error.WriteLine(error); return 1;}
     }
 }

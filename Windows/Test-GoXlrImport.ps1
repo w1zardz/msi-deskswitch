@@ -64,6 +64,9 @@ try {
     Assert ($taskUtility.devices.'EXPLICIT-TEST-SERIAL'.profile -ceq 'Selected') 'Wrong main profile or serial.'
     Assert ($taskUtility.devices.'EXPLICIT-TEST-SERIAL'.mic_profile -ceq 'Selected Mic') 'Wrong microphone profile.'
     Assert ($taskUtility.allow_network_access -eq $false) 'Network API must not be enabled.'
+    foreach ($taskDirectory in @(@('samples_directory','samples'), @('presets_directory','presets'), @('icons_directory','icons'), @('logs_directory','logs'), @('backup_directory','backups'))) {
+        Assert ($taskUtility.($taskDirectory[0]) -ceq (Join-Path $taskGood.Data $taskDirectory[1])) 'Utility data escaped the shared profile directory.'
+    }
     foreach ($taskPair in @(@{Path='profiles/Selected.goxlr'; Bytes=$taskGood.MainBytes}, @{Path='profiles/Default.goxlr'; Bytes=$taskGood.MainBytes}, @{Path='mic-profiles/Selected Mic.goxlrMicProfile'; Bytes=$taskGood.MicBytes}, @{Path='mic-profiles/DEFAULT.goxlrMicProfile'; Bytes=$taskGood.MicBytes})) {
         Assert ((Get-ImportHash ([IO.File]::ReadAllBytes((Join-Path $taskGood.Data $taskPair.Path)))) -ceq (Get-ImportHash $taskPair.Bytes)) 'Profile copy changed bytes.'
     }

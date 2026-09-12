@@ -2,9 +2,9 @@
 [CmdletBinding()]
 param(
     [string]$ManifestPath = (Join-Path $PSScriptRoot 'GoXLR-Import.json'),
-    [string]$UtilityConfigPath = (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'GoXLR-on-Linux\GoXLR-Utility\config\settings.json'),
-    [string]$UtilityDataPath = (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'GoXLR-on-Linux\GoXLR-Utility\data'),
-    [string]$DeskSwitchConfigPath = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'MSI-DeskSwitch\goxlr.json')
+    [string]$UtilityConfigPath = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.deskswitch\GoXLR-Utility\settings.json'),
+    [string]$UtilityDataPath = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.deskswitch\GoXLR-Utility\data'),
+    [string]$DeskSwitchConfigPath = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.deskswitch\goxlr.json')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -132,6 +132,9 @@ function Invoke-GoXlrProfileImport {
     $taskDeviceSettings = [ordered]@{}
     $taskDeviceSettings[$taskSerial] = [ordered]@{profile=$taskMainName; mic_profile=$taskMicName; shutdown_commands=@(); sleep_commands=@(); wake_commands=@()}
     $taskUtilitySettings = [ordered]@{allow_network_access=$false; profile_directory=$taskProfilesPath; mic_profile_directory=$taskMicsPath; devices=$taskDeviceSettings}
+    foreach ($taskDirectory in @(@('samples_directory','samples'), @('presets_directory','presets'), @('icons_directory','icons'), @('logs_directory','logs'), @('backup_directory','backups'))) {
+        $taskUtilitySettings[$taskDirectory[0]] = Join-Path $taskDataPath $taskDirectory[1]
+    }
     $taskEncoding = New-Object Text.UTF8Encoding($false)
     $taskConfigBytes = $taskEncoding.GetBytes(($taskUtilitySettings | ConvertTo-Json -Depth 12) + "`n")
     $taskDeskOriginal = $null
@@ -201,7 +204,8 @@ function Invoke-GoXlrProfileImport {
         else { [IO.File]::Move($taskTemporary, $taskDeskPath) }
     } finally { if (Test-Path -LiteralPath $taskTemporary) { Remove-Item -LiteralPath $taskTemporary } }
     Write-Host "Профили готовы: $taskMainName / $taskMicName. GoXLR: $taskSerial."
-    Write-Host 'Теперь запусти GoXLR Utility, затем MSI DeskSwitch. Вращение меняет Headphones; нажатие твоей ручки остаётся Delete.'
+    Write-Host 'Теперь установи Utility и запусти Configure-GoXlrStartup.cmd: он закрепит этот конфиг в автозапуске. Открой созданный ярлык Utility, затем MSI DeskSwitch.'
+    Write-Host "Для нестандартного пути передай Configure-GoXlrStartup.ps1 -UtilityConfigPath `"$taskConfigPath`". Вращение меняет Headphones; нажатие ручки остаётся Delete."
     Write-Host 'Оригинальный GoXLR App, его драйвер и профили не изменены. Не запускай GoXLR App одновременно с Utility.'
 }
 

@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$ObsRoot = (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'obs-studio'),
-    [string]$DeskSwitchRoot = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'MSI-DeskSwitch'),
+    [string]$DeskSwitchRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.deskswitch'),
     [string]$OutputPath,
     [string]$ProfileName,
     [string]$SceneCollectionName,
