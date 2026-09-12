@@ -197,7 +197,7 @@ function Invoke-GoXlrProfileImport {
         [IO.File]::WriteAllBytes($taskTemporary, $taskDeskBytes)
         [void](Assert-ImportPath $taskDeskPath)
         if ($null -ne $taskDeskOriginal -and (Get-ImportHash ([IO.File]::ReadAllBytes($taskDeskPath))) -cne (Get-ImportHash $taskDeskOriginal)) { throw 'Настройки DeskSwitch изменились; сохранена подготовленная Utility, конфигурация DeskSwitch не заменена.' }
-        if ($null -ne $taskDeskOriginal) { [IO.File]::Replace($taskTemporary, $taskDeskPath, $null) }
+        if ($null -ne $taskDeskOriginal) { [IO.File]::Replace($taskTemporary, $taskDeskPath, [System.Management.Automation.Language.NullString]::Value) }
         else { [IO.File]::Move($taskTemporary, $taskDeskPath) }
     } finally { if (Test-Path -LiteralPath $taskTemporary) { Remove-Item -LiteralPath $taskTemporary } }
     Write-Host "Профили готовы: $taskMainName / $taskMicName. GoXLR: $taskSerial."
