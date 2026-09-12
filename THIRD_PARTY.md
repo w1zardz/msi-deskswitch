@@ -2,6 +2,8 @@
 
 The MIT license in this repository applies to DeskSwitch's own code.
 
+The native Mac 2.0 app bundles only m1ddc 1.2.0 from the pinned arm64 Ventura bottle below. Its executable is signed locally during packaging; its license is included at `Contents/Resources/Licenses/m1ddc-LICENSE`. The app uses Apple's system frameworks and does not bundle Hammerspoon. Hammerspoon applies only to the legacy release bundle.
+
 The optional Mac release bundle includes these unmodified upstream archives:
 
 | Component | Source | SHA-256 |
