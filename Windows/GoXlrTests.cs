@@ -14,6 +14,9 @@ internal sealed class FakeGoXlr : IGoXlrApi {
     public readonly ManualResetEvent StatusStarted=new ManualResetEvent(false);
     public readonly ManualResetEvent ReleaseStatus=new ManualResetEvent(false);
     public bool BlockNextStatus,FailNextSet,FailNextStatus;
+    public readonly ManualResetEvent SetStarted=new ManualResetEvent(false);
+    public readonly ManualResetEvent ReleaseSet=new ManualResetEvent(false);
+    public bool BlockNextSet;
     public int SetAttempts;
     public int Level(string serial) {lock(gate) {return levels[serial];}}
     public void Level(string serial,int value) {lock(gate) {levels[serial]=value;}}
@@ -31,6 +34,10 @@ internal sealed class FakeGoXlr : IGoXlrApi {
         return snapshot.ToArray();
     }
     public void SetHeadphones(string serial,int value,GoXlrOperation operation) {
+        if(BlockNextSet) {
+            BlockNextSet=false; SetStarted.Set();
+            if(!ReleaseSet.WaitOne(4000)) throw new Exception("Test timed out waiting for write acknowledgement.");
+        }
         lock(gate) {
             SetAttempts++;
             if(FailNextSet) {FailNextSet=false; throw new Exception("HTTP 200 Error");}
@@ -259,8 +266,42 @@ internal static class GoXlrTests {
         keys.Reset(); // Previous key-up happened on the lock screen or another KVM host.
         Check(keys.Handle(0xAD,true,true,action) && actions==before+1,"First mute click after reconnect was treated as an old repeat.");
     }
+    static void VolumeFeedback() {
+        var fake=new FakeGoXlr();
+        var updates=new List<GoXlrUpdate>();
+        using(var audio=new GoXlrAudio(Config(),delegate(GoXlrUpdate update){lock(updates) {updates.Add(update);}},delegate(int port){return fake;})) {
+            audio.Refresh(); Idle(audio);
+            Check(updates.Count==1 && !updates[0].ConfirmedHeadphones.HasValue,"Status refresh must not show a volume gesture.");
+            updates.Clear(); fake.BlockNextSet=true;
+            audio.VolumeKey(0xAF);
+            Check(fake.SetStarted.WaitOne(2000),"Write did not begin.");
+            lock(updates) {Check(updates.Count==0,"Overlay reported a volume before write acknowledgement.");}
+            fake.ReleaseSet.Set(); Idle(audio);
+            Check(updates.Count==1 && updates[0].ConfirmedHeadphones==133,"Acknowledged level missing from feedback.");
+            Check(updates[0].Mixers[0].Headphones==133,"Feedback mixer contains the old volume.");
+            updates.Clear(); fake.FailNextSet=true;
+            audio.VolumeKey(0xAF); Idle(audio);
+            Check(updates.Count==1 && updates[0].Error && !updates[0].ConfirmedHeadphones.HasValue,"Failed write displayed an unconfirmed volume.");
+            updates.Clear(); fake.Level("A",255);
+            int attempts=fake.SetAttempts;
+            audio.VolumeKey(0xAF); Idle(audio);
+            Check(updates[0].ConfirmedHeadphones==255 && fake.SetAttempts==attempts,"Upper limit needs feedback without another write.");
+            updates.Clear(); fake.Level("A",0);
+            audio.VolumeKey(0xAD); Idle(audio);
+            Check(updates[0].ConfirmedHeadphones==0 && fake.SetAttempts==attempts,"Unknown mute should display zero without increasing volume.");
+            updates.Clear(); audio.Suspend(true); Idle(audio);
+            Check(updates.Count==1 && !updates[0].ConfirmedHeadphones.HasValue,"Suspend must not display a stale level.");
+        }
+        fake=new FakeGoXlr {BlockNextStatus=true}; updates.Clear();
+        using(var audio=new GoXlrAudio(Config(),delegate(GoXlrUpdate update){lock(updates) {updates.Add(update);}},delegate(int port){return fake;})) {
+            audio.VolumeKey(0xAF); Check(fake.StatusStarted.WaitOne(2000),"Cancelled gesture did not start.");
+            var settings=audio.Settings; settings.Serial="B"; audio.Configure(settings);
+            fake.ReleaseStatus.Set(); Idle(audio);
+            Check(updates.TrueForAll(delegate(GoXlrUpdate update){return !update.ConfirmedHeadphones.HasValue;}),"Old-device gesture displayed a volume after selection changed.");
+        }
+    }
     public static int Main() {
-        try {Protocol(); Http(); QueueAndClamp(); Mute(); Failures(); SessionLifecycle(); KeyEpochs(); KeyOwnership(); Console.WriteLine("GoXLR: "+count+" checks passed."); return 0;}
+        try {Protocol(); Http(); QueueAndClamp(); Mute(); Failures(); SessionLifecycle(); KeyEpochs(); KeyOwnership(); VolumeFeedback(); Console.WriteLine("GoXLR: "+count+" checks passed."); return 0;}
         catch(Exception error) {Console.Error.WriteLine(error); return 1;}
     }
 }

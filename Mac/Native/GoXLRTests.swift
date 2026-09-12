@@ -154,5 +154,48 @@ extension CoreTests {
         control.enqueue(.step(5)); await control.waitUntilIdle()
         try expect(api.writes.last?.2 == 14565, "Use the user's explicit port")
         control.enabled = false
+        try await headphonesFeedback()
+    }
+
+    @MainActor private static func headphonesFeedback() async throws {
+        let api = FakeGoXLR()
+        let control = HeadphonesController(api: api, defaults: nil)
+        control.serial = "A"
+        control.enabled = true
+        var feedback: [Int?] = []
+        control.onVolumeFeedback = { feedback.append($0) }
+        await control.refresh()
+        try expect(feedback.isEmpty, "Background refresh never opens the volume overlay")
+
+        var quietBeforeAcknowledgement = false
+        api.beforeWrite = { quietBeforeAcknowledgement = feedback.isEmpty }
+        control.enqueue(.step(5)); await control.waitUntilIdle()
+        try expect(quietBeforeAcknowledgement && feedback == [105], "Only acknowledged user volume opens the overlay")
+
+        feedback.removeAll(); api.failWrites = true; api.applyBeforeError = true
+        control.enqueue(.step(5)); await control.waitUntilIdle()
+        try expect(feedback.count == 1 && feedback[0] == nil, "Unconfirmed write dismisses feedback instead of displaying its target")
+
+        api.failWrites = false; api.applyBeforeError = false
+        feedback.removeAll(); api.values["A"] = 255
+        let writes = api.writes.count
+        control.enqueue(.step(5)); await control.waitUntilIdle()
+        try expect(feedback == [255] && api.writes.count == writes, "Known upper limit still shows feedback without a write")
+
+        feedback.removeAll(); api.values["A"] = 0
+        control.enqueue(.mute); await control.waitUntilIdle()
+        try expect(feedback == [0] && api.writes.count == writes, "Unknown zero displays zero and never invents a restore level")
+
+        feedback.removeAll(); api.values["A"] = 100
+        api.beforeWrite = { control.serial = "B" }
+        control.enqueue(.step(5)); await control.waitUntilIdle()
+        try expect(feedback.count == 1 && feedback[0] == nil, "Late acknowledgement for the old device cannot reopen the overlay")
+
+        feedback.removeAll(); control.invalidate()
+        try expect(feedback.count == 1 && feedback[0] == nil, "Device or session invalidation dismisses the overlay")
+
+        feedback.removeAll(); control.outputActive = false
+        control.enqueue(.step(5)); await control.waitUntilIdle()
+        try expect(feedback.count == 1 && feedback[0] == nil, "Switching to speakers dismisses GoXLR feedback and prevents further gestures")
     }
 }

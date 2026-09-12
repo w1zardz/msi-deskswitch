@@ -15,9 +15,14 @@ import SwiftUI
     private var item: NSStatusItem!
     private var controller: DeskController!
     private var settingsWindow: NSWindow?
+    private let headphonesOverlay = HeadphonesOverlay()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         controller = DeskController()
+        controller.headphones.onVolumeFeedback = { [weak self] level in
+            if let level { self?.headphonesOverlay.show(level: level) }
+            else { self?.headphonesOverlay.dismiss() }
+        }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "DeskSwitch")
         item.button?.toolTip = "DeskSwitch — Mac ↔ Windows"

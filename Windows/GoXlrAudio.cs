@@ -156,6 +156,8 @@ internal sealed class GoXlrUpdate {
     public string Status;
     public bool Error;
     public GoXlrMixer[] Mixers;
+    // Present only after a user's volume command was acknowledged (or hit a known limit).
+    public int? ConfirmedHeadphones;
 }
 
 internal sealed class GoXlrAudio : IDisposable {
@@ -241,12 +243,12 @@ internal sealed class GoXlrAudio : IDisposable {
         }
         wake.Set();
     }
-    void Publish(GoXlrOperation operation,string status,bool error) {
+    void Publish(GoXlrOperation operation,string status,bool error,int? confirmedHeadphones=null) {
         GoXlrUpdate update;
         lock(gate) {
             if(disposed || (operation!=null && operation!=active)) return;
             if(operation!=null) { try {operation.ThrowIfCancelled();} catch(OperationCanceledException) {return;} }
-            update=new GoXlrUpdate {Revision=revision,Status=status,Error=error,Mixers=mixers};
+            update=new GoXlrUpdate {Revision=revision,Status=status,Error=error,Mixers=mixers,ConfirmedHeadphones=confirmedHeadphones};
         }
         notify(update);
     }
@@ -281,7 +283,7 @@ internal sealed class GoXlrAudio : IDisposable {
                     if(work.Mute) {
                         int? saved; lock(gate) {operation.ThrowIfCancelled(); saved=restoreVolume;}
                         if(current==0 && !saved.HasValue) {
-                            Publish(operation,"Headphones уже 0%. Нет сохранённого уровня — громкость не повышена.",false); continue;
+                            Publish(operation,"Headphones уже 0%. Нет сохранённого уровня — громкость не повышена.",false,0); continue;
                         }
                         target=current>0?0:saved.Value;
                     } else target=(int)Math.Max(0L,Math.Min(255L,(long)current+work.Delta));
@@ -293,7 +295,8 @@ internal sealed class GoXlrAudio : IDisposable {
                             restoreVolume=work.Mute && current>0?(int?)current:null;
                         }
                     }
-                    Publish(operation,"Headphones: "+Math.Round(target*100.0/255)+"% · "+config.Serial,false);
+                    selected.Headphones=target;
+                    Publish(operation,"Headphones: "+Math.Round(target*100.0/255)+"% · "+config.Serial,false,target);
                 } catch(OperationCanceledException) { }
                 catch(Exception error) {
                     bool current;

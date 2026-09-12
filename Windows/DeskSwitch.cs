@@ -104,9 +104,12 @@ internal sealed class Tray : ApplicationContext {
     readonly Control dispatch = new Control();
     int busy;
     int wheelBusy;
+    int wheelAttempts;
+    int wheelGeneration;
     string lastWheelStatus;
     readonly GoXlrAudio audio;
     readonly GoXlrVolumeHook volumeHook;
+    readonly HeadphonesOverlay volumeOverlay = new HeadphonesOverlay();
     readonly ToolStripMenuItem audioMenu = new ToolStripMenuItem("Крутилка: громкость Windows");
     readonly ToolStripMenuItem audioEnabled = new ToolStripMenuItem("Крутилка → Headphones GoXLR");
     readonly ToolStripMenuItem audioStatus = new ToolStripMenuItem("GoXLR Utility: проверка…") {Enabled=false};
@@ -155,15 +158,21 @@ internal sealed class Tray : ApplicationContext {
         UpdateAudioMenu(); audio.Refresh();
         SystemEvents.PowerModeChanged += PowerChanged;
         SystemEvents.SessionSwitch += SessionChanged;
-        wheelTimer.Tick += delegate {RepairWheel();};
-        hotkey = new HotkeyWindow(delegate { Switch(16); }, delegate {RepairWheel(); audio.HardwareChanged();});
-        wheelTimer.Start();
+        wheelTimer.Tick += delegate {
+            if(wheelBusy!=0) return;
+            if(wheelAttempts>0) {wheelAttempts--; RepairWheel();}
+            else wheelTimer.Stop();
+        };
+        hotkey = new HotkeyWindow(delegate { Switch(16); }, delegate {volumeOverlay.Dismiss(); ScheduleWheelRepair(); audio.HardwareChanged();});
+        ScheduleWheelRepair();
     }
     void PowerChanged(object sender,PowerModeChangedEventArgs e) {
+        volumeOverlay.Dismiss();
         if(e.Mode==PowerModes.Suspend) audio.Suspend(true);
-        if(e.Mode==PowerModes.Resume) audio.Suspend(false);
+        if(e.Mode==PowerModes.Resume) {audio.Suspend(false); ScheduleWheelRepair();}
     }
     void SessionChanged(object sender,SessionSwitchEventArgs e) {
+        volumeOverlay.Dismiss();
         switch(e.Reason) {
             case SessionSwitchReason.SessionLock:
             case SessionSwitchReason.SessionLogoff:
@@ -184,6 +193,8 @@ internal sealed class Tray : ApplicationContext {
             audioStatus.Text=audioHookError??update.Status;
             audioUpdateRevision=update.Revision; audioUpdateError=update.Error;
             audioMixers=update.Mixers; UpdateAudioMenu();
+            if(update.Error || !audio.OwnsVolumeKeys) volumeOverlay.Dismiss();
+            else if(volumeHook!=null && update.ConfirmedHeadphones.HasValue) volumeOverlay.ShowLevel(update.ConfirmedHeadphones.Value);
             if(update.Error && update.Status!=lastAudioError) {
                 Program.Log("GoXLR: "+update.Status);
                 if(audio.Settings.Enabled) icon.ShowBalloonTip(6000,"GoXLR · Headphones",update.Status,ToolTipIcon.Warning);
@@ -216,6 +227,7 @@ internal sealed class Tray : ApplicationContext {
     void SaveAudio(GoXlrSettings value) {
         try {
             value.Save();
+            volumeOverlay.Dismiss();
             if(value.Port!=audio.Settings.Port) audioMixers=new GoXlrMixer[0];
             audio.Configure(value); UpdateAudioMenu();
         } catch(Exception error) {MessageBox.Show(error.Message,"Настройки GoXLR",MessageBoxButtons.OK,MessageBoxIcon.Error);}
@@ -235,17 +247,37 @@ internal sealed class Tray : ApplicationContext {
             }
         }
     }
+    void ScheduleWheelRepair() {
+        if(dispatch.IsDisposed) return;
+        if(dispatch.InvokeRequired) {
+            try {dispatch.BeginInvoke((Action)ScheduleWheelRepair);} catch(InvalidOperationException) { }
+            return;
+        }
+        // Let USB settle, retry briefly, then leave a working mouse alone.
+        wheelGeneration++; wheelAttempts=3;
+        wheelTimer.Stop(); wheelTimer.Start();
+    }
     void RepairWheel() {
         if(Interlocked.Exchange(ref wheelBusy,1)!=0) return;
+        int generation=wheelGeneration;
         ThreadPool.QueueUserWorkItem(delegate {
             try {
                 string result=WheelRepair.Run(true);
                 if(result!=lastWheelStatus) {Program.Log(result);lastWheelStatus=result;}
+                bool ready=result.StartsWith("MX Master 3S wheel mode=",StringComparison.Ordinal)
+                    || result.StartsWith("MX Master 3S wheel restored:",StringComparison.Ordinal)
+                    || result.StartsWith("Logitech Options is active;",StringComparison.Ordinal);
+                if(ready && !dispatch.IsDisposed) try {
+                    dispatch.BeginInvoke((Action)delegate {
+                        if(generation==wheelGeneration) {wheelAttempts=0; wheelTimer.Stop();}
+                    });
+                } catch(InvalidOperationException) { }
             } catch(Exception error) {Program.Log("Wheel: "+error.Message);}
             finally {Interlocked.Exchange(ref wheelBusy,0);}
         });
     }
     void Switch(uint target) {
+        volumeOverlay.Dismiss();
         if (Interlocked.Exchange(ref busy, 1)!=0) return;
         ThreadPool.QueueUserWorkItem(delegate {
             try { MonitorInput.Set(target); Program.Log("Input command accepted: " + target); }
@@ -260,7 +292,7 @@ internal sealed class Tray : ApplicationContext {
     protected override void ExitThreadCore() {
         SystemEvents.PowerModeChanged -= PowerChanged;
         SystemEvents.SessionSwitch -= SessionChanged;
-        if(volumeHook!=null) volumeHook.Dispose(); audio.Dispose();
+        if(volumeHook!=null) volumeHook.Dispose(); audio.Dispose(); volumeOverlay.Dispose();
         wheelTimer.Dispose(); hotkey.Dispose(); icon.Visible=false; icon.Dispose(); dispatch.Dispose(); base.ExitThreadCore();
     }
 }

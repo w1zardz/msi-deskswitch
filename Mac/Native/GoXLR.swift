@@ -130,6 +130,8 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
         didSet { if oldValue != outputActive { invalidate() } }
     }
     var onCaptureChanged: (() -> Void)?
+    // A raw level is emitted only for a confirmed user gesture; nil dismisses stale feedback.
+    var onVolumeFeedback: ((Int?) -> Void)?
     var captureEnabled: Bool { outputActive && enabled && !serial.isEmpty && (1...65535).contains(port) }
     var selected: GoXLRDevice? { devices.first { $0.id == serial } }
     private let api: GoXLRTransport
@@ -150,6 +152,7 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
     }
 
     func invalidate() {
+        onVolumeFeedback?(nil)
         generation += 1
         worker?.cancel()
         // The in-flight worker keeps its slot until it has returned; it must never overlap a replacement.
@@ -181,6 +184,7 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
                 status = "Наушники: \(Self.percent(selected.volume))%"
             }
             else {
+                onVolumeFeedback?(nil)
                 restoreVolume = nil
                 onCaptureChanged?()
                 status = serial.isEmpty ? "Выбери свой GoXLR из списка." : "Выбранный GoXLR сейчас отключён."
@@ -233,6 +237,7 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
                         else {
                             self.devices = found
                             self.status = "Наушники выключены. Поверни ручку, чтобы поднять громкость."
+                            self.onVolumeFeedback?(0)
                             continue
                         }
                     }
@@ -246,6 +251,7 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
                     else { self.restoreVolume = nil }
                     self.devices = found.map { $0.id == device ? GoXLRDevice(id: device, volume: next) : $0 }
                     self.status = next == 0 ? "Наушники: звук выключен" : "Наушники: \(Self.percent(next))%"
+                    self.onVolumeFeedback?(next)
                 }
             } catch {
                 guard token == self.generation else { return }
@@ -256,6 +262,7 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
     }
 
     private func fail(_ error: Error) {
+        onVolumeFeedback?(nil)
         devices = []
         restoreVolume = nil
         status = (error as? GoXLRError)?.localizedDescription
@@ -267,5 +274,5 @@ final class GoXLRAPI: NSObject, GoXLRTransport, URLSessionTaskDelegate {
         while let task = worker { await task.value }
     }
 
-    static func percent(_ value: Int) -> Int { Int((Double(value) * 100 / 255).rounded()) }
+    nonisolated static func percent(_ value: Int) -> Int { Int((Double(value) * 100 / 255).rounded()) }
 }
