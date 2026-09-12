@@ -10,6 +10,11 @@ using Microsoft.Win32.SafeHandles;
 // Clear diversion and high resolution; preserve inversion and all other bits.
 // SmartShift, ratchet, buttons, DPI and pairing are deliberately independent.
 internal static class WheelRepair {
+    static byte lastSlot;
+    static IEnumerable<byte> Slots() {
+        if(lastSlot!=0) yield return lastSlot;
+        for(byte slot=1;slot<=6;slot++) if(slot!=lastSlot) yield return slot;
+    }
     [StructLayout(LayoutKind.Sequential)] struct InterfaceData {
         public uint Size; public Guid ClassGuid; public uint Flags; public IntPtr Reserved;
     }
@@ -109,7 +114,7 @@ internal static class WheelRepair {
         }
         foreach(string path in Paths()) using(var device=new Device(path)) {
             if(!device.IsLongInterface()) continue;
-            for(byte slot=1;slot<=6;slot++) {
+            foreach(byte slot in Slots()) {
                 byte[] feature=device.Request(slot,0,0,0x21,0x21,0);
                 if(feature==null || feature[0]==0) continue;
                 byte[] nameFeature=device.Request(slot,0,0,0,5,0);
@@ -124,6 +129,7 @@ internal static class WheelRepair {
                 if(nameBytes.Count<length[0]) continue;
                 string name=Encoding.UTF8.GetString(nameBytes.ToArray(),0,length[0]);
                 if(!name.Equals("MX Master 3S",StringComparison.Ordinal)) continue;
+                lastSlot=slot;
                 byte[] mode=device.Request(slot,feature[0],1);
                 if(mode==null) continue;
                 byte normal=(byte)(mode[0]&~3);

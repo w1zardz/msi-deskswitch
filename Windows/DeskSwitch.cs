@@ -103,7 +103,8 @@ internal sealed class Tray : ApplicationContext {
     readonly Control dispatch = new Control();
     int busy;
     int wheelBusy;
-    readonly System.Windows.Forms.Timer wheelTimer = new System.Windows.Forms.Timer {Interval=2000};
+    string lastWheelStatus;
+    readonly System.Windows.Forms.Timer wheelTimer = new System.Windows.Forms.Timer {Interval=1500};
     public Tray() {
         dispatch.CreateControl();
         var menu = new ContextMenuStrip();
@@ -114,19 +115,16 @@ internal sealed class Tray : ApplicationContext {
         menu.Items.Add("Выход", null, delegate { ExitThread(); });
         icon = new NotifyIcon { Icon=SystemIcons.Application, Text="MSI: PageDown → MacBook", ContextMenuStrip=menu, Visible=true };
         icon.DoubleClick += delegate { Switch(16); };
-        wheelTimer.Tick += delegate {wheelTimer.Stop();RepairWheel();};
-        hotkey = new HotkeyWindow(delegate { Switch(16); }, delegate {wheelTimer.Stop();wheelTimer.Start();});
+        wheelTimer.Tick += delegate {RepairWheel();};
+        hotkey = new HotkeyWindow(delegate { Switch(16); }, delegate {RepairWheel();});
         wheelTimer.Start();
     }
     void RepairWheel() {
         if(Interlocked.Exchange(ref wheelBusy,1)!=0) return;
         ThreadPool.QueueUserWorkItem(delegate {
             try {
-                for(int attempt=0;attempt<3;attempt++) {
-                    string result=WheelRepair.Run(true);
-                    if(result.IndexOf("not available",StringComparison.Ordinal)<0 || attempt==2) {Program.Log(result);break;}
-                    Thread.Sleep(1500);
-                }
+                string result=WheelRepair.Run(true);
+                if(result!=lastWheelStatus) {Program.Log(result);lastWheelStatus=result;}
             } catch(Exception error) {Program.Log("Wheel: "+error.Message);}
             finally {Interlocked.Exchange(ref wheelBusy,0);}
         });
