@@ -49,6 +49,9 @@ try {
     Expect-Failure { Set-GoXlrStartupShortcut $taskExe $taskConfig $taskLink }
     Assert ((Get-FileHash -LiteralPath $taskLink).Hash -ceq $taskGoodHash) 'Invalid settings changed a valid startup shortcut.'
     Write-Output 'GoXLR startup checks passed (isolated files and shortcut; no apps started or stopped).'
+} catch {
+    Write-Output ('::error::Startup fixture: ' + $_.Exception.Message + ' | ' + ($_.ScriptStackTrace -replace '[\r\n]+', ' '))
+    throw
 } finally {
     $taskResolved = [IO.Path]::GetFullPath($taskFixture)
     if ([IO.Path]::GetDirectoryName($taskResolved) -ine $taskBase -or [IO.Path]::GetFileName($taskResolved) -notmatch '^DeskSwitch-startup-tests-[0-9a-f]{32}$') { throw 'Refusing cleanup outside the unique fixture.' }
