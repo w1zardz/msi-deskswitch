@@ -5,5 +5,5 @@ if ($LASTEXITCODE -ne 0) { throw 'DeskSwitch build failed.' }
 $taskDist = Join-Path (Split-Path $PSScriptRoot -Parent) 'dist'
 New-Item -ItemType Directory -Path $taskDist -Force | Out-Null
 $taskZip = Join-Path $taskDist 'DeskSwitch-Windows.zip'
-Compress-Archive -LiteralPath (Join-Path $PSScriptRoot 'DeskSwitch.exe'), (Join-Path $PSScriptRoot 'Install.ps1'), (Join-Path (Split-Path $PSScriptRoot -Parent) 'LICENSE'), (Join-Path (Split-Path $PSScriptRoot -Parent) 'THIRD_PARTY.md') -DestinationPath $taskZip -Force
+Compress-Archive -LiteralPath (Join-Path $PSScriptRoot 'DeskSwitch.exe'), (Join-Path $PSScriptRoot 'Install.ps1'), (Join-Path $PSScriptRoot 'Export-GoXlrProfiles.cmd'), (Join-Path $PSScriptRoot 'Export-GoXlrProfiles.ps1'), (Join-Path (Split-Path $PSScriptRoot -Parent) 'LICENSE'), (Join-Path (Split-Path $PSScriptRoot -Parent) 'THIRD_PARTY.md') -DestinationPath $taskZip -Force
 Write-Output "Created: $taskZip"

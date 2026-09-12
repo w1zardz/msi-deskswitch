@@ -20,6 +20,9 @@ jobs:
       - name: Test GoXLR protocol and volume handling
         shell: powershell
         run: .\Windows\Test-GoXlr.ps1
+      - name: Test GoXLR profile export
+        shell: powershell
+        run: .\Windows\Test-GoXlrExport.ps1
       - name: Build Windows package
         shell: powershell
         run: .\Windows\Build.ps1
