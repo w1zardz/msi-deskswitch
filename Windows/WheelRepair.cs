@@ -6,6 +6,42 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
+// Separate request matching from USB I/O so delayed Bolt replies can be tested.
+internal sealed class WheelProtocol {
+    internal const int ReplyTimeoutMilliseconds=1800;
+    readonly Func<byte[],bool> write;
+    readonly Func<uint,byte[]> read;
+    readonly Func<long> milliseconds;
+    int softwareId=11;
+    internal WheelProtocol(Func<byte[],bool> send,Func<uint,byte[]> receive,Func<long> clock) {
+        write=send; read=receive; milliseconds=clock;
+    }
+    internal static long Now() {
+        return (long)(System.Diagnostics.Stopwatch.GetTimestamp()*1000.0/System.Diagnostics.Stopwatch.Frequency);
+    }
+    internal byte[] Request(byte slot,byte feature,byte function,params byte[] parameters) {
+        if(function>15 || parameters==null || parameters.Length>16) throw new ArgumentException("Invalid HID++ request.");
+        // Zero is reserved for notifications. Rotate IDs so a late reply to an
+        // earlier ROOT query cannot masquerade as the next feature lookup.
+        softwareId=softwareId%15+1;
+        byte[] packet=new byte[20];packet[0]=0x11;packet[1]=slot;packet[2]=feature;packet[3]=(byte)((function<<4)|softwareId);
+        Array.Copy(parameters,0,packet,4,parameters.Length);
+        if(!write(packet)) return null;
+        long end=milliseconds()+ReplyTimeoutMilliseconds;
+        while(true) {
+            long remaining=end-milliseconds();
+            if(remaining<=0) return null;
+            byte[] reply=read((uint)remaining);
+            if(reply==null) return null;
+            if(reply.Length<5 || reply[1]!=slot) continue;
+            if((reply[2]==0xFF || reply[2]==0x8F) && reply[3]==feature && reply[4]==packet[3]) return null;
+            if(reply.Length==20 && reply[0]==0x11 && reply[2]==feature && reply[3]==packet[3]) {
+                byte[] result=new byte[16];Array.Copy(reply,4,result,0,16);return result;
+            }
+        }
+    }
+}
+
 // Logitech HID++ 2.0 feature 0x2121. Only the MX Master 3S on a Bolt receiver.
 // Clear diversion and high resolution; preserve inversion and all other bits.
 // SmartShift, ratchet, buttons, DPI and pairing are deliberately independent.
@@ -66,7 +102,12 @@ internal static class WheelRepair {
 
     sealed class Device : IDisposable {
         readonly SafeFileHandle file;
-        public Device(string path) {file=CreateFile(path,0xC0000000,3,IntPtr.Zero,3,0x40000000,IntPtr.Zero);}
+        readonly WheelProtocol protocol;
+        public Device(string path) {
+            file=CreateFile(path,0xC0000000,3,IntPtr.Zero,3,0x40000000,IntPtr.Zero);
+            protocol=new WheelProtocol(delegate(byte[] packet) {return Transfer(packet,true,600)!=null;},
+                delegate(uint timeout) {return Transfer(null,false,timeout);},WheelProtocol.Now);
+        }
         public bool IsLongInterface() {
             if(file.IsInvalid) return false;
             IntPtr data;
@@ -91,18 +132,7 @@ internal static class WheelRepair {
             } finally {CloseHandle(ev);Marshal.FreeHGlobal(ov);Marshal.FreeHGlobal(buffer);}
         }
         public byte[] Request(byte slot,byte feature,byte function,params byte[] parameters) {
-            byte[] packet=new byte[20];packet[0]=0x11;packet[1]=slot;packet[2]=feature;packet[3]=(byte)((function<<4)|0x0C);
-            Array.Copy(parameters,0,packet,4,parameters.Length);
-            if(Transfer(packet,true,600)==null) return null;
-            DateTime end=DateTime.UtcNow.AddMilliseconds(650);
-            while(DateTime.UtcNow<end) {
-                byte[] reply=Transfer(null,false,(uint)Math.Max(1,(end-DateTime.UtcNow).TotalMilliseconds));
-                if(reply==null) return null;
-                if(reply[1]!=slot) continue;
-                if(reply[2]==0xFF && reply[3]==feature && reply[4]==packet[3]) return null;
-                if(reply[2]==feature && reply[3]==packet[3]) {byte[] result=new byte[16];Array.Copy(reply,4,result,0,16);return result;}
-            }
-            return null;
+            return protocol.Request(slot,feature,function,parameters);
         }
         public void Dispose() {file.Dispose();}
     }
