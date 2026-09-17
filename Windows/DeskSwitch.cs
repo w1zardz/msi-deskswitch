@@ -128,7 +128,7 @@ internal sealed class Tray : ApplicationContext {
         var menu = new ContextMenuStrip();
         menu.Items.Add("MacBook — PageDown", null, delegate { Switch(16); });
         menu.Items.Add("Windows — DisplayPort", null, delegate { Switch(15); });
-        menu.Items.Add("Восстановить прокрутку MX Master 3S", null, delegate { RepairWheel(); });
+        menu.Items.Add("Восстановить колесо и боковые кнопки MX Master 3S", null, delegate { RepairWheel(); });
         audioMenu.DropDownItems.Add(audioStatus);
         audioMenu.DropDownItems.Add(audioEnabled);
         audioMenu.DropDownItems.Add(audioDevices);
@@ -274,17 +274,14 @@ internal sealed class Tray : ApplicationContext {
         int generation=wheelGeneration;
         ThreadPool.QueueUserWorkItem(delegate {
             try {
-                string result=WheelRepair.Run(true);
-                if(result!=lastWheelStatus) {Program.Log(result);lastWheelStatus=result;}
-                bool ready=result.StartsWith("MX Master 3S wheel mode=",StringComparison.Ordinal)
-                    || result.StartsWith("MX Master 3S wheel restored:",StringComparison.Ordinal)
-                    || result.StartsWith("Logitech Options is active;",StringComparison.Ordinal);
-                if(ready && !dispatch.IsDisposed) try {
+                MouseRepairResult result=WheelRepair.RunMouse(true);
+                if(result.Message!=lastWheelStatus) {Program.Log(result.Message);lastWheelStatus=result.Message;}
+                if(result.Complete && !dispatch.IsDisposed) try {
                     dispatch.BeginInvoke((Action)delegate {
                         if(generation==wheelGeneration) {wheelAttempts=0; wheelTimer.Stop();}
                     });
                 } catch(InvalidOperationException) { }
-            } catch(Exception error) {Program.Log("Wheel: "+error.Message);}
+            } catch(Exception error) {Program.Log("Mouse: "+error.Message);}
             finally {Interlocked.Exchange(ref wheelBusy,0);}
         });
     }
@@ -322,6 +319,11 @@ internal static class Program {
     [STAThread] public static int Main(string[] args) {
         try {
             string mode=args.Length==0?"tray":args[0].ToLowerInvariant();
+            if(mode=="mouse-status" || mode=="repair-mouse") {
+                MouseRepairResult result=WheelRepair.RunMouse(mode=="repair-mouse"); Log(result.Message);
+                if(args.Length>1) File.WriteAllText(Path.GetFullPath(args[1]),result.Message+Environment.NewLine);
+                return result.Complete?0:1;
+            }
             if(mode=="wheel-status" || mode=="repair-wheel") {
                 string result=WheelRepair.Run(mode=="repair-wheel"); Log(result);
                 if(args.Length>1) File.WriteAllText(Path.GetFullPath(args[1]),result+Environment.NewLine);
@@ -334,7 +336,7 @@ internal static class Program {
                 return 0;
             }
             if (mode=="mac" || mode=="windows") { MonitorInput.Set(mode=="mac"?16u:15u); Log("Input command accepted: "+mode); return 0; }
-            if (mode!="tray") throw new Exception("Usage: DeskSwitch.exe [tray|status [file]|mac|windows|wheel-status [file]|repair-wheel [file]]");
+            if (mode!="tray") throw new Exception("Usage: DeskSwitch.exe [tray|status [file]|mac|windows|mouse-status [file]|repair-mouse [file]|wheel-status [file]|repair-wheel [file]]");
             bool created;
             using (var mutex=new Mutex(true,@"Local\MSI322UPF-DeskSwitch-Tray",out created)) {
                 if (!created) return 0;

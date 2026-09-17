@@ -17,6 +17,71 @@ internal static class WheelRepairTests {
         }
         internal byte[] Reply(byte value) {var p=(byte[])sent.Clone();p[4]=value;return p;}
     }
+    sealed class Buttons {
+        internal readonly Dictionary<byte,byte[]> states=new Dictionary<byte,byte[]> {
+            {0x53,new byte[]{0,0x53,1,0,0x53,1}},
+            {0x56,new byte[]{0,0x56,1,0,0x56,1}}
+        };
+        internal readonly List<byte> changed=new List<byte>();
+        internal bool unavailable,noAck,ignoreWrite,changeMapping,changeHighFlags,wrongReadback;
+        internal byte badCid,shortCid;
+        internal byte[] Request(byte slot,byte feature,byte function,params byte[] p) {
+            Check(slot==4,"Recovery must use the discovered slot, not hard-code slot 2.");
+            if(feature==0) {
+                Check(function==0 && p.Length==3 && p[0]==0x1B && p[1]==4 && p[2]==0,"Resolve the button feature through ROOT.");
+                return unavailable?null:new byte[]{7};
+            }
+            Check(feature==7 && p.Length>=2 && p[0]==0 && states.ContainsKey(p[1]),"Never address other features or controls.");
+            byte cid=p[1];
+            if(function==2) {
+                if(cid==shortCid) return new byte[2];
+                var reply=(byte[])states[cid].Clone();
+                if(cid==badCid || (wrongReadback && changed.Count>0)) reply[1]=0x52;
+                return reply;
+            }
+            Check(function==3 && p.Length==5 && p[2]==2 && p[3]==0 && p[4]==0,"Write only the temporary DIVERTED valid bit, without remapping.");
+            changed.Add(cid);
+            if(noAck) return null;
+            if(!ignoreWrite) states[cid][2]&=0xFE;
+            if(changeMapping) states[cid][4]=0x52;
+            if(changeHighFlags) states[cid][5]^=2;
+            return new byte[16];
+        }
+        internal MouseRepairResult Run(bool repair) {return MouseButtonRepair.Run(Request,4,repair);}
+    }
+    static void TestButtons() {
+        var both=new Buttons();
+        Check(both.Run(true).Complete && both.changed.Count==2,"Restore both diverted side buttons.");
+        Check(both.states[0x53][2]==0 && both.states[0x56][2]==0,"Readback must confirm both diversion bits were cleared.");
+        int writes=both.changed.Count;
+        Check(both.Run(true).Complete && both.changed.Count==writes,"Healthy buttons must not be written again.");
+
+        var single=new Buttons();single.states[0x53][2]=0;
+        Check(single.Run(true).Complete && single.changed.Count==1 && single.changed[0]==0x56,"Only change a diverted control.");
+        var preserve=new Buttons();preserve.states[0x53]=new byte[]{0,0x53,0xB1,0x12,0x34,0xA5};
+        Check(preserve.Run(true).Complete && preserve.states[0x53][2]==0xB0
+            && preserve.states[0x53][3]==0x12 && preserve.states[0x53][4]==0x34 && preserve.states[0x53][5]==0xA5,"Preserve every unrelated flag and the existing remap.");
+
+        var status=new Buttons();
+        Check(status.Run(false).Complete && status.changed.Count==0 && status.states[0x53][2]==1,"Status is read-only even when buttons are diverted.");
+        var unavailable=new Buttons {unavailable=true};
+        Check(!unavailable.Run(true).Complete && unavailable.changed.Count==0,"A missing button feature must not stop retries as healthy.");
+        var wrong=new Buttons {badCid=0x56};
+        Check(!wrong.Run(true).Complete && wrong.changed.Count==0,"Read and validate both originals before any mutation.");
+        var malformed=new Buttons {shortCid=0x53};
+        Check(!malformed.Run(true).Complete && malformed.changed.Count==0,"Reject truncated original state without writing.");
+        var noAck=new Buttons {noAck=true};
+        MouseRepairResult failure=noAck.Run(true);
+        Check(!failure.Complete && failure.Message.Contains("Back=00-53-01-00-53-01") && failure.Message.Contains("Forward=00-56-01-00-56-01"),"Keep original states when a write fails and allow retry.");
+        var unchanged=new Buttons {ignoreWrite=true};
+        Check(!unchanged.Run(true).Complete,"An acknowledged write is insufficient without verified clearance.");
+        var remapped=new Buttons {changeMapping=true};
+        Check(!remapped.Run(true).Complete,"Detect an unexpected mapping change.");
+        var changedFlags=new Buttons {changeHighFlags=true};
+        Check(!changedFlags.Run(true).Complete,"Detect unexpected changes in the high flag byte.");
+        var foreign=new Buttons {wrongReadback=true};
+        Check(!foreign.Run(true).Complete,"Reject readback for a different control.");
+    }
     static void Main() {
         var delayed=new Fixture();
         delayed.receive=delegate(uint timeout) {
@@ -65,6 +130,7 @@ internal static class WheelRepairTests {
         try {ids.protocol.Request(2,0,16);throw new Exception("Invalid function accepted.");} catch(ArgumentException) { }
         try {ids.protocol.Request(2,0,0,new byte[17]);throw new Exception("Oversized packet accepted.");} catch(ArgumentException) { }
         Check(ids.writes==writes,"Reject malformed requests before touching USB.");
-        Console.WriteLine("Wheel protocol checks passed: "+checks);
+        TestButtons();
+        Console.WriteLine("Mouse protocol and button recovery checks passed: "+checks);
     }
 }

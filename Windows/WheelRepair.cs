@@ -42,9 +42,54 @@ internal sealed class WheelProtocol {
     }
 }
 
-// Logitech HID++ 2.0 feature 0x2121. Only the MX Master 3S on a Bolt receiver.
-// Clear diversion and high resolution; preserve inversion and all other bits.
-// SmartShift, ratchet, buttons, DPI and pairing are deliberately independent.
+internal delegate byte[] MouseRequest(byte slot,byte feature,byte function,params byte[] parameters);
+
+internal sealed class MouseRepairResult {
+    internal readonly bool Complete;
+    internal readonly string Message;
+    internal MouseRepairResult(bool complete,string message) {Complete=complete;Message=message;}
+}
+
+// Called only after the physical device has been identified as MX Master 3S.
+internal static class MouseButtonRepair {
+    static bool Valid(byte[] value,byte cid) {
+        return value!=null && value.Length>=6 && value[0]==0 && value[1]==cid;
+    }
+    static string State(byte[] value) {return BitConverter.ToString(value,0,6);}
+    internal static MouseRepairResult Run(MouseRequest request,byte slot,bool repair) {
+        byte[] feature=request(slot,0,0,0x1B,0x04,0);
+        if(feature==null || feature.Length==0 || feature[0]==0)
+            return new MouseRepairResult(false,"Side button feature unavailable.");
+        byte[] cids={0x53,0x56};
+        var before=new byte[2][];
+        // Read both originals before changing either control. Keep them in the
+        // result/log even when a later write or verification fails.
+        for(int i=0;i<cids.Length;i++) {
+            before[i]=request(slot,feature[0],2,0,cids[i]);
+            if(!Valid(before[i],cids[i])) return new MouseRepairResult(false,"Side button read failed for "+cids[i].ToString("X2")+"; no buttons changed.");
+        }
+        string originals=" Originals: Back="+State(before[0])+", Forward="+State(before[1])+".";
+        int changed=0;
+        for(int i=0;i<cids.Length;i++) {
+            if(!repair || (before[i][2]&1)==0) continue;
+            // 0x02 marks only DIVERTED as valid, with value zero. A zero remap
+            // means leave the current mapping unchanged, not reset it.
+            if(request(slot,feature[0],3,0,cids[i],2,0,0)==null)
+                return new MouseRepairResult(false,"Side button change was not acknowledged for "+cids[i].ToString("X2")+"."+originals);
+            byte[] after=request(slot,feature[0],2,0,cids[i]);
+            if(!Valid(after,cids[i]) || after[2]!=(before[i][2]&~1)
+                || after[3]!=before[i][3] || after[4]!=before[i][4] || after[5]!=before[i][5])
+                return new MouseRepairResult(false,"Side button verification failed for "+cids[i].ToString("X2")+"."+originals);
+            changed++;
+        }
+        if(!repair) return new MouseRepairResult(true,"Side buttons DIVERTED: Back="+(before[0][2]&1)+", Forward="+(before[1][2]&1)+"."+originals);
+        return new MouseRepairResult(true,changed==0?"Side buttons diversion is off.":"Side buttons restored: "+changed+". Other flags and mappings preserved."+originals);
+    }
+}
+
+// Logitech HID++ 2.0. Only the MX Master 3S on a Bolt receiver.
+// Wheel feature 0x2121 and optional side button feature 0x1B04 are separate.
+// SmartShift, ratchet, other controls, DPI and pairing remain independent.
 internal static class WheelRepair {
     static byte lastSlot;
     static IEnumerable<byte> Slots() {
@@ -138,9 +183,15 @@ internal static class WheelRepair {
     }
 
     public static string Run(bool repair) {
+        return RunCore(repair,false).Message;
+    }
+    internal static MouseRepairResult RunMouse(bool repair) {
+        return RunCore(repair,true);
+    }
+    static MouseRepairResult RunCore(bool repair,bool buttons) {
         if(repair) foreach(var process in System.Diagnostics.Process.GetProcesses()) using(process) {
             if(process.ProcessName.StartsWith("logioptions",StringComparison.OrdinalIgnoreCase))
-                return "Logitech Options is active; its wheel settings take priority.";
+                return new MouseRepairResult(true,"Logitech Options is active; its mouse settings take priority.");
         }
         foreach(string path in Paths()) using(var device=new Device(path)) {
             if(!device.IsLongInterface()) continue;
@@ -163,15 +214,18 @@ internal static class WheelRepair {
                 byte[] mode=device.Request(slot,feature[0],1);
                 if(mode==null) continue;
                 byte normal=(byte)(mode[0]&~3);
+                string wheel="MX Master 3S wheel mode="+mode[0]+". SmartShift preserved.";
                 if(repair && normal!=mode[0]) {
-                    if(device.Request(slot,feature[0],2,normal)==null) return "Wheel repair was not acknowledged.";
+                    if(device.Request(slot,feature[0],2,normal)==null) return new MouseRepairResult(false,"Wheel repair was not acknowledged.");
                     byte[] verified=device.Request(slot,feature[0],1);
-                    if(verified==null || verified[0]!=normal) return "Wheel repair verification failed.";
-                    return "MX Master 3S wheel restored: " + mode[0] + " -> " + normal + ". SmartShift preserved.";
+                    if(verified==null || verified[0]!=normal) return new MouseRepairResult(false,"Wheel repair verification failed.");
+                    wheel="MX Master 3S wheel restored: " + mode[0] + " -> " + normal + ". SmartShift preserved.";
                 }
-                return "MX Master 3S wheel mode="+mode[0]+". SmartShift preserved.";
+                if(!buttons) return new MouseRepairResult(true,wheel);
+                MouseRepairResult result=MouseButtonRepair.Run(device.Request,slot,repair);
+                return new MouseRepairResult(result.Complete,wheel+" "+result.Message);
             }
         }
-        return "MX Master 3S not available on a Bolt receiver.";
+        return new MouseRepairResult(false,"MX Master 3S not available on a Bolt receiver.");
     }
 }
