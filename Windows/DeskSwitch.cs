@@ -128,7 +128,7 @@ internal sealed class Tray : ApplicationContext {
         var menu = new ContextMenuStrip();
         menu.Items.Add("MacBook — PageDown", null, delegate { Switch(16); });
         menu.Items.Add("Windows — DisplayPort", null, delegate { Switch(15); });
-        menu.Items.Add("Восстановить колесо и боковые кнопки MX Master 3S", null, delegate { RepairWheel(); });
+        menu.Items.Add("Восстановить колёса и боковые кнопки MX Master 3S", null, delegate { RepairWheel(); });
         audioMenu.DropDownItems.Add(audioStatus);
         audioMenu.DropDownItems.Add(audioEnabled);
         audioMenu.DropDownItems.Add(audioDevices);

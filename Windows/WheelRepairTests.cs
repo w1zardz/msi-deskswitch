@@ -82,6 +82,48 @@ internal static class WheelRepairTests {
         var foreign=new Buttons {wrongReadback=true};
         Check(!foreign.Run(true).Complete,"Reject readback for a different control.");
     }
+    sealed class Thumb {
+        internal byte[] state={1,0,0};
+        internal int writes;
+        internal bool unavailable,unreadable,noAck,ignoreWrite,flipInvert;
+        internal byte[] Request(byte slot,byte feature,byte function,params byte[] p) {
+            Check(slot==4,"Thumb wheel recovery must use the discovered slot.");
+            if(feature==0) {
+                Check(function==0 && p.Length==3 && p[0]==0x21 && p[1]==0x50 && p[2]==0,"Resolve the thumb wheel feature through ROOT.");
+                return unavailable?null:new byte[]{9};
+            }
+            Check(feature==9,"Never address other features.");
+            if(function==1) {Check(p.Length==0,"Thumb wheel status takes no parameters.");return unreadable?null:(byte[])state.Clone();}
+            Check(function==2 && p.Length==2,"Write only the thumb wheel reporting mode and direction.");
+            writes++;
+            if(noAck) return null;
+            if(!ignoreWrite) {state[0]=p[0];state[1]=p[1];}
+            if(flipInvert) state[1]^=1;
+            return new byte[16];
+        }
+        internal MouseRepairResult Run(bool repair) {return ThumbWheelRepair.Run(Request,4,repair);}
+    }
+    static void TestThumbWheel() {
+        var diverted=new Thumb();
+        Check(diverted.Run(true).Complete && diverted.writes==1 && diverted.state[0]==0,"Return a diverted thumb wheel to native horizontal scrolling.");
+        Check(diverted.Run(true).Complete && diverted.writes==1,"A native thumb wheel must not be written again.");
+        var inverted=new Thumb();inverted.state[1]=1;
+        Check(inverted.Run(true).Complete && inverted.state[0]==0 && inverted.state[1]==1,"Preserve the current thumb wheel direction.");
+        var status=new Thumb();
+        MouseRepairResult read=status.Run(false);
+        Check(read.Complete && status.writes==0 && status.state[0]==1 && read.Message.Contains("DIVERTED"),"Status is read-only and reports thumb wheel diversion.");
+        var unavailable=new Thumb {unavailable=true};
+        Check(!unavailable.Run(true).Complete && unavailable.writes==0,"A missing thumb wheel feature must not stop retries as healthy.");
+        var unreadable=new Thumb {unreadable=true};
+        Check(!unreadable.Run(true).Complete && unreadable.writes==0,"Never write without a valid original thumb wheel state.");
+        var noAck=new Thumb {noAck=true};
+        MouseRepairResult failure=noAck.Run(true);
+        Check(!failure.Complete && failure.Message.Contains("Original: 01-00"),"Keep the original thumb wheel state when a write fails.");
+        var unchanged=new Thumb {ignoreWrite=true};
+        Check(!unchanged.Run(true).Complete,"An acknowledged write is insufficient without verified native mode.");
+        var flipped=new Thumb {flipInvert=true};
+        Check(!flipped.Run(true).Complete,"Detect an unexpected thumb wheel direction change.");
+    }
     static void Main() {
         var delayed=new Fixture();
         delayed.receive=delegate(uint timeout) {
@@ -131,6 +173,7 @@ internal static class WheelRepairTests {
         try {ids.protocol.Request(2,0,0,new byte[17]);throw new Exception("Oversized packet accepted.");} catch(ArgumentException) { }
         Check(ids.writes==writes,"Reject malformed requests before touching USB.");
         TestButtons();
-        Console.WriteLine("Mouse protocol and button recovery checks passed: "+checks);
+        TestThumbWheel();
+        Console.WriteLine("Mouse protocol, thumb wheel and button recovery checks passed: "+checks);
     }
 }

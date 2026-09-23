@@ -87,8 +87,32 @@ internal static class MouseButtonRepair {
     }
 }
 
+// Thumb wheel feature 0x2150: status starts with [reporting mode, invert].
+// Mode bit 0 sends rotation only as Logitech HID++ notifications, so without
+// Logitech software neither Windows nor macOS receives horizontal scrolling.
+internal static class ThumbWheelRepair {
+    internal static MouseRepairResult Run(MouseRequest request,byte slot,bool repair) {
+        byte[] feature=request(slot,0,0,0x21,0x50,0);
+        if(feature==null || feature.Length==0 || feature[0]==0)
+            return new MouseRepairResult(false,"Thumb wheel feature unavailable.");
+        byte[] before=request(slot,feature[0],1);
+        if(before==null || before.Length<2) return new MouseRepairResult(false,"Thumb wheel read failed; nothing changed.");
+        string original=" Original: "+BitConverter.ToString(before,0,2)+".";
+        byte native=(byte)(before[0]&~1);
+        if(!repair || native==before[0])
+            return new MouseRepairResult(true,((before[0]&1)!=0?"Thumb wheel DIVERTED":"Thumb wheel native")+": mode="+before[0]+", invert="+before[1]+".");
+        // Keep the current direction; only return rotation to native HID.
+        if(request(slot,feature[0],2,native,before[1])==null)
+            return new MouseRepairResult(false,"Thumb wheel change was not acknowledged."+original);
+        byte[] after=request(slot,feature[0],1);
+        if(after==null || after.Length<2 || after[0]!=native || after[1]!=before[1])
+            return new MouseRepairResult(false,"Thumb wheel verification failed."+original);
+        return new MouseRepairResult(true,"Thumb wheel restored: "+before[0]+" -> "+native+", invert="+before[1]+" preserved."+original);
+    }
+}
+
 // Logitech HID++ 2.0. Only the MX Master 3S on a Bolt receiver.
-// Wheel feature 0x2121 and optional side button feature 0x1B04 are separate.
+// Wheel 0x2121, optional thumb wheel 0x2150 and side buttons 0x1B04 are separate.
 // SmartShift, ratchet, other controls, DPI and pairing remain independent.
 internal static class WheelRepair {
     static byte lastSlot;
@@ -188,7 +212,7 @@ internal static class WheelRepair {
     internal static MouseRepairResult RunMouse(bool repair) {
         return RunCore(repair,true);
     }
-    static MouseRepairResult RunCore(bool repair,bool buttons) {
+    static MouseRepairResult RunCore(bool repair,bool controls) {
         if(repair) foreach(var process in System.Diagnostics.Process.GetProcesses()) using(process) {
             if(process.ProcessName.StartsWith("logioptions",StringComparison.OrdinalIgnoreCase))
                 return new MouseRepairResult(true,"Logitech Options is active; its mouse settings take priority.");
@@ -221,9 +245,11 @@ internal static class WheelRepair {
                     if(verified==null || verified[0]!=normal) return new MouseRepairResult(false,"Wheel repair verification failed.");
                     wheel="MX Master 3S wheel restored: " + mode[0] + " -> " + normal + ". SmartShift preserved.";
                 }
-                if(!buttons) return new MouseRepairResult(true,wheel);
-                MouseRepairResult result=MouseButtonRepair.Run(device.Request,slot,repair);
-                return new MouseRepairResult(result.Complete,wheel+" "+result.Message);
+                if(!controls) return new MouseRepairResult(true,wheel);
+                // Run both so a failure in one does not leave the other diverted.
+                MouseRepairResult thumb=ThumbWheelRepair.Run(device.Request,slot,repair);
+                MouseRepairResult buttons=MouseButtonRepair.Run(device.Request,slot,repair);
+                return new MouseRepairResult(thumb.Complete && buttons.Complete,wheel+" "+thumb.Message+" "+buttons.Message);
             }
         }
         return new MouseRepairResult(false,"MX Master 3S not available on a Bolt receiver.");
