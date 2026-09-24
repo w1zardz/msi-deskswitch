@@ -65,12 +65,22 @@ internal static class MonitorInput {
 }
 
 internal sealed class HotkeyWindow : NativeWindow, IDisposable {
+    delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
+    [StructLayout(LayoutKind.Sequential)] struct KeyData { public uint Key, Scan, Flags, Time; public UIntPtr Extra; }
     [DllImport("user32.dll", SetLastError=true)] static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
     [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr window, int id);
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SetWindowsHookEx(int id, HookProc callback, IntPtr module, uint thread);
+    [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+    const int PageDownReleased = 0x8001; // WM_APP+1
     readonly Action action;
     readonly Action devicesChanged;
-    readonly System.Windows.Forms.Timer releaseTimer = new System.Windows.Forms.Timer {Interval=25};
+    readonly PageDownKey pageDown = new PageDownKey();
+    readonly HookProc callback;
+    IntPtr hook;
     public HotkeyWindow(Action onHotkey, Action onDevicesChanged) {
         action = onHotkey;
         devicesChanged = onDevicesChanged;
@@ -80,22 +90,43 @@ internal sealed class HotkeyWindow : NativeWindow, IDisposable {
             DestroyHandle();
             throw new Exception("Ctrl+Shift+F11 is already used by another app.");
         }
-        if (!RegisterHotKey(Handle, 2, 0x4000, 0x22)) {
+        // Low-level hook instead of RegisterHotKey: only it sees the extended flag that
+        // separates the red PgDn key from Numpad 3 with NumLock off.
+        callback = KeyboardHook;
+        hook = SetWindowsHookEx(13, callback, GetModuleHandle(null), 0);
+        if (hook==IntPtr.Zero) {
+            int error = Marshal.GetLastWin32Error();
             UnregisterHotKey(Handle,1); DestroyHandle();
-            throw new Exception("PageDown is already used by another app.");
+            throw new Win32Exception(error, "Cannot watch the PageDown key.");
         }
-        // Switch after release so a held key cannot bounce back on the other host.
-        releaseTimer.Tick += delegate {
-            if((GetAsyncKeyState(0x22)&0x8000)==0) {releaseTimer.Stop();action();}
-        };
+    }
+    static bool Down(int key) { return (GetAsyncKeyState(key)&0x8000)!=0; }
+    IntPtr KeyboardHook(int code, IntPtr message, IntPtr data) {
+        if (code>=0) {
+            int type = message.ToInt32();
+            if (type==0x100 || type==0x104 || type==0x101 || type==0x105) {
+                var key = (KeyData)Marshal.PtrToStructure(data, typeof(KeyData));
+                if (key.Key==PageDownKey.VirtualKey) {
+                    bool modified = Down(0x10) || Down(0x11) || Down(0x12) || Down(0x5B) || Down(0x5C);
+                    bool trigger;
+                    bool consume = pageDown.Handle((int)key.Key, key.Flags, type==0x100 || type==0x104, modified, out trigger);
+                    if (trigger) PostMessage(Handle, PageDownReleased, IntPtr.Zero, IntPtr.Zero);
+                    if (consume) return new IntPtr(1);
+                }
+            }
+        }
+        return CallNextHookEx(hook, code, message, data);
     }
     protected override void WndProc(ref Message m) {
         if (m.Msg==0x312 && m.WParam.ToInt32()==1) action();
-        if (m.Msg==0x312 && m.WParam.ToInt32()==2) releaseTimer.Start();
-        if (m.Msg==0x219) devicesChanged();
+        if (m.Msg==PageDownReleased) action();
+        if (m.Msg==0x219) { pageDown.Reset(); devicesChanged(); }
         base.WndProc(ref m);
     }
-    public void Dispose() { releaseTimer.Dispose(); UnregisterHotKey(Handle, 1); UnregisterHotKey(Handle, 2); DestroyHandle(); }
+    public void Dispose() {
+        if (hook!=IntPtr.Zero) { UnhookWindowsHookEx(hook); hook=IntPtr.Zero; }
+        UnregisterHotKey(Handle, 1); DestroyHandle();
+    }
 }
 
 internal sealed class Tray : ApplicationContext {
