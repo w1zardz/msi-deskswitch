@@ -20,6 +20,8 @@ Awake обновлён 26.09 в 21:40: SHA версии 22.09, running/PID, св
 state/wake и SleepDisabled=1 подтверждены. В установщике исправлена гонка
 bootout/bootstrap (старый процесс завершался после возврата bootout).
 Повторный физический тест с закрытой крышкой после 20 минут Windows ещё нужен.
+Windows fix `4a7e8e5`: CI `36263967582` зелёный, 16 PageDown + 62 native checks,
+регрессии мыши/GoXLR/overlay и сборка ZIP прошли. На ПК владельца ещё не установлено.
 
 Перед работой прочитать [AGENTS.md](AGENTS.md) и [README.md](README.md). Точные ответы мыши, параметры восстановления и ссылки на протокол сохранены в [Windows/MX-Master-3S.md](Windows/MX-Master-3S.md).
 
