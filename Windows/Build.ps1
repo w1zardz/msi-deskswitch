@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $taskCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-& $taskCompiler /nologo /target:winexe /optimize+ /utf8output /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll "/out:$PSScriptRoot\DeskSwitch.exe" "$PSScriptRoot\DeskSwitch.cs" "$PSScriptRoot\PageDownKey.cs" "$PSScriptRoot\WheelRepair.cs" "$PSScriptRoot\GoXlrAudio.cs" "$PSScriptRoot\HeadphonesOverlay.cs"
+& $taskCompiler /nologo /target:winexe /optimize+ /utf8output /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll "/out:$PSScriptRoot\DeskSwitch.exe" "$PSScriptRoot\DeskSwitch.cs" "$PSScriptRoot\PageDownKey.cs" "$PSScriptRoot\PageDownHook.cs" "$PSScriptRoot\WheelRepair.cs" "$PSScriptRoot\GoXlrAudio.cs" "$PSScriptRoot\HeadphonesOverlay.cs"
 if ($LASTEXITCODE -ne 0) { throw 'DeskSwitch build failed.' }
 $taskDist = Join-Path (Split-Path $PSScriptRoot -Parent) 'dist'
 New-Item -ItemType Directory -Path $taskDist -Force | Out-Null

@@ -65,23 +65,13 @@ internal static class MonitorInput {
 }
 
 internal sealed class HotkeyWindow : NativeWindow, IDisposable {
-    delegate IntPtr HookProc(int code, IntPtr message, IntPtr data);
-    [StructLayout(LayoutKind.Sequential)] struct KeyData { public uint Key, Scan, Flags, Time; public UIntPtr Extra; }
     [DllImport("user32.dll", SetLastError=true)] static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
     [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr window, int id);
-    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
-    [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SetWindowsHookEx(int id, HookProc callback, IntPtr module, uint thread);
-    [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
-    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
-    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
     const int PageDownReleased = 0x8001; // WM_APP+1
-    readonly Action action;
+    readonly Action<string> action;
     readonly Action devicesChanged;
-    readonly PageDownKey pageDown = new PageDownKey();
-    readonly HookProc callback;
-    IntPtr hook;
-    public HotkeyWindow(Action onHotkey, Action onDevicesChanged) {
+    readonly PageDownHook pageDown;
+    public HotkeyWindow(Action<string> onHotkey, Action onDevicesChanged) {
         action = onHotkey;
         devicesChanged = onDevicesChanged;
         CreateHandle(new CreateParams { Caption="MSI DeskSwitch Hotkey" });
@@ -90,41 +80,21 @@ internal sealed class HotkeyWindow : NativeWindow, IDisposable {
             DestroyHandle();
             throw new Exception("Ctrl+Shift+F11 is already used by another app.");
         }
-        // Low-level hook instead of RegisterHotKey: only it sees the extended flag that
-        // separates the red PgDn key from Numpad 3 with NumLock off.
-        callback = KeyboardHook;
-        hook = SetWindowsHookEx(13, callback, GetModuleHandle(null), 0);
-        if (hook==IntPtr.Zero) {
-            int error = Marshal.GetLastWin32Error();
+        try {pageDown=new PageDownHook(Handle,PageDownReleased,Program.Log);}
+        catch {
             UnregisterHotKey(Handle,1); DestroyHandle();
-            throw new Win32Exception(error, "Cannot watch the PageDown key.");
+            throw;
         }
     }
-    static bool Down(int key) { return (GetAsyncKeyState(key)&0x8000)!=0; }
-    IntPtr KeyboardHook(int code, IntPtr message, IntPtr data) {
-        if (code>=0) {
-            int type = message.ToInt32();
-            if (type==0x100 || type==0x104 || type==0x101 || type==0x105) {
-                var key = (KeyData)Marshal.PtrToStructure(data, typeof(KeyData));
-                if (key.Key==PageDownKey.VirtualKey) {
-                    bool modified = Down(0x10) || Down(0x11) || Down(0x12) || Down(0x5B) || Down(0x5C);
-                    bool trigger;
-                    bool consume = pageDown.Handle((int)key.Key, key.Flags, type==0x100 || type==0x104, modified, out trigger);
-                    if (trigger) PostMessage(Handle, PageDownReleased, IntPtr.Zero, IntPtr.Zero);
-                    if (consume) return new IntPtr(1);
-                }
-            }
-        }
-        return CallNextHookEx(hook, code, message, data);
-    }
+    public void Refresh(PageDownRefresh reason) {if(pageDown!=null) pageDown.Refresh(reason);}
     protected override void WndProc(ref Message m) {
-        if (m.Msg==0x312 && m.WParam.ToInt32()==1) action();
-        if (m.Msg==PageDownReleased) action();
-        if (m.Msg==0x219) { pageDown.Reset(); devicesChanged(); }
+        if (m.Msg==0x312 && m.WParam.ToInt32()==1) action("Ctrl+Shift+F11");
+        if (m.Msg==PageDownReleased) action("PageDown hook generation="+m.WParam.ToInt32());
+        if (m.Msg==0x219) {Refresh(PageDownRefresh.UsbChanged); devicesChanged();}
         base.WndProc(ref m);
     }
     public void Dispose() {
-        if (hook!=IntPtr.Zero) { UnhookWindowsHookEx(hook); hook=IntPtr.Zero; }
+        pageDown.Dispose();
         UnregisterHotKey(Handle, 1); DestroyHandle();
     }
 }
@@ -157,8 +127,8 @@ internal sealed class Tray : ApplicationContext {
     public Tray() {
         dispatch.CreateControl();
         var menu = new ContextMenuStrip();
-        menu.Items.Add("MacBook — PageDown", null, delegate { Switch(16); });
-        menu.Items.Add("Windows — DisplayPort", null, delegate { Switch(15); });
+        menu.Items.Add("MacBook — PageDown", null, delegate { Switch(16,"tray-menu"); });
+        menu.Items.Add("Windows — DisplayPort", null, delegate { Switch(15,"tray-menu"); });
         menu.Items.Add("Восстановить колёса и боковые кнопки MX Master 3S", null, delegate { RepairWheel(); });
         audioMenu.DropDownItems.Add(audioStatus);
         audioMenu.DropDownItems.Add(audioEnabled);
@@ -172,7 +142,7 @@ internal sealed class Tray : ApplicationContext {
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Выход", null, delegate { ExitThread(); });
         icon = new NotifyIcon { Icon=SystemIcons.Application, Text="MSI: PageDown → MacBook", ContextMenuStrip=menu, Visible=true };
-        icon.DoubleClick += delegate { Switch(16); };
+        icon.DoubleClick += delegate { Switch(16,"tray-double-click"); };
         GoXlrSettings audioSettings;
         try {audioSettings=GoXlrSettings.Load();}
         catch(Exception error) {audioSettings=new GoXlrSettings(); Program.Log("GoXLR settings: "+error.Message);}
@@ -196,13 +166,16 @@ internal sealed class Tray : ApplicationContext {
             if(wheelAttempts>0) {wheelAttempts--; RepairWheel();}
             else wheelTimer.Stop();
         };
-        hotkey = new HotkeyWindow(delegate { Switch(16); }, delegate {volumeOverlay.Dismiss(); ScheduleWheelRepair(); audio.HardwareChanged();});
+        hotkey = new HotkeyWindow(delegate(string source) {Switch(16,source);}, delegate {volumeOverlay.Dismiss(); ScheduleWheelRepair(); audio.HardwareChanged();});
         ScheduleWheelRepair();
     }
     void PowerChanged(object sender,PowerModeChangedEventArgs e) {
         volumeOverlay.Dismiss();
         if(e.Mode==PowerModes.Suspend) audio.Suspend(true);
-        if(e.Mode==PowerModes.Resume) {audio.Suspend(false); ScheduleWheelRepair();}
+        if(e.Mode==PowerModes.Resume) {
+            if(hotkey!=null) hotkey.Refresh(PageDownRefresh.Resume);
+            audio.Suspend(false); ScheduleWheelRepair();
+        }
     }
     void SessionChanged(object sender,SessionSwitchEventArgs e) {
         volumeOverlay.Dismiss();
@@ -216,6 +189,7 @@ internal sealed class Tray : ApplicationContext {
             case SessionSwitchReason.SessionLogon:
             case SessionSwitchReason.ConsoleConnect:
             case SessionSwitchReason.RemoteConnect:
+                if(hotkey!=null) hotkey.Refresh(PageDownRefresh.SessionActive);
                 audio.SuspendSession(false); break;
         }
     }
@@ -316,13 +290,22 @@ internal sealed class Tray : ApplicationContext {
             finally {Interlocked.Exchange(ref wheelBusy,0);}
         });
     }
-    void Switch(uint target) {
+    void Switch(uint target,string source) {
+        Program.Log("Switch request: source="+source+" target="+target);
         volumeOverlay.Dismiss();
-        if (Interlocked.Exchange(ref busy, 1)!=0) return;
+        if (Interlocked.Exchange(ref busy, 1)!=0) {
+            Program.Log("Switch ignored: previous DDC operation is still busy.");
+            return;
+        }
         ThreadPool.QueueUserWorkItem(delegate {
-            try { MonitorInput.Set(target); Program.Log("Input command accepted: " + target); }
+            var elapsed=System.Diagnostics.Stopwatch.StartNew();
+            Program.Log("DDC start: target="+target);
+            try {
+                MonitorInput.Set(target);
+                Program.Log("Input command accepted: "+target+" elapsed="+elapsed.ElapsedMilliseconds+"ms");
+            }
             catch (Exception error) {
-                Program.Log("ERROR " + error.Message);
+                Program.Log("DDC ERROR after "+elapsed.ElapsedMilliseconds+"ms: "+error.Message);
                 if (!dispatch.IsDisposed) try {
                     dispatch.BeginInvoke((Action)delegate { icon.ShowBalloonTip(6000,"MSI DeskSwitch",error.Message,ToolTipIcon.Error); });
                 } catch (InvalidOperationException) { }

@@ -17,6 +17,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Test PageDown key and dedicated listener recovery
+        shell: powershell
+        run: .\Windows\Test-PageDownKey.ps1 -NativeHook
       - name: Test Logitech Bolt replies and side button recovery
         shell: powershell
         run: .\Windows\Test-WheelRepair.ps1
