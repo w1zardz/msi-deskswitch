@@ -13,6 +13,14 @@ set_disabled() { actions="${actions}disable:$1 "; mock_disabled="$1"; }
 wake_display() { actions="${actions}wake "; }
 request_sleep() { actions="${actions}sleep "; }
 log() { messages="${messages}$*"$'\n'; }
+display_hold_alive() { [[ -n "$display_hold_pid" && "$mock_hold_alive" == 1 ]]; }
+start_display_hold() {
+    mock_next_pid=$((mock_next_pid + 1))
+    display_hold_pid="$mock_next_pid"
+    mock_hold_alive=1
+    hold_actions="${hold_actions}start:${display_hold_pid} "
+}
+retire_display_hold() { hold_actions="${hold_actions}stop:$1 "; }
 
 checks=0
 expect() {
@@ -26,6 +34,7 @@ fixture() {
     reset_state
     mock_ac=1 mock_monitor=0 mock_kvm=0 mock_lid=1 mock_disabled=0
     actions="" messages=""
+    hold_actions="" mock_hold_alive=0 mock_next_pid=1000
     grace=90
 }
 
@@ -126,5 +135,65 @@ fixture
 mock_disabled=1
 update_state 100
 expect "$actions" "disable:0 sleep " "Startup without a confirmed dock does not grant unconditional AC grace"
+
+fixture
+mock_monitor=1
+update_state 100
+expect "$hold_actions" "start:1001 " "Framebuffer protects display while KVM stays on Windows"
+hold_actions=""; actions=""; messages=""
+update_state 114
+expect "$hold_actions" "" "Live display lease is reused before renewal"
+expect "$messages" "" "Display lease does not flood steady logs"
+update_state 115
+expect "$hold_actions" "start:1002 " "First renewal keeps previous assertion until replacement has run"
+expect "$display_hold_previous_pid" 1001 "Previous lease remains owned during asynchronous assertion acquisition"
+expect "$actions" "" "Renewal does not fake user activity or change sleep settings"
+expect "$messages" "" "Normal lease renewal stays quiet"
+hold_actions=""
+for ((now=116; now<=1600; now++)); do update_state "$now"; done
+expect "$mock_disabled" 1 "System stays protected throughout 25 minutes on Windows"
+expect "$display_hold_started" 1600 "Display lease keeps renewing throughout 25 minutes without USB return"
+expect "$actions" "" "Long Windows session does not keep sending wake events"
+hold_actions=""
+mock_hold_alive=0
+update_state 1601
+expect "$hold_actions" "start:1102 stop:1101 " "An unexpectedly dead child is replaced immediately"
+hold_actions=""
+update_state 1590
+expect "$hold_actions" "start:1103 stop:1100 " "Backward clock change renews while preserving the current overlap"
+hold_actions=""
+mock_monitor=0
+update_state 1679
+expect "$hold_actions" "start:1104 stop:1102 " "Dock detach grace keeps the display protected with overlap"
+hold_actions=""; actions=""
+update_state 1680
+expect "$hold_actions" "stop:1104 stop:1103 " "Detach deadline releases both owned display assertions"
+expect "$display_hold_pid" "" "Detached state owns no display assertion"
+expect "$actions" "disable:0 sleep " "Detach deadline restores closed-lid sleep"
+
+fixture
+mock_monitor=1
+update_state 100
+hold_actions=""; actions=""
+mock_ac=0
+update_state 101
+expect "$hold_actions" "stop:1001 " "Battery drops display protection immediately even if framebuffer persists"
+expect "$actions" "disable:0 sleep " "Battery still restores closed-lid sleep"
+hold_actions=""
+mock_ac=1 mock_monitor=0
+update_state 102
+expect "$hold_actions" "" "Unrelated charger never starts display protection"
+
+fixture
+mock_ac=0 mock_kvm=1
+update_state 100
+expect "$hold_actions" "" "MSI USB on battery cannot start display protection"
+mock_ac=1
+update_state 101
+expect "$hold_actions" "start:1001 " "Authorized MSI USB alone starts display protection on AC"
+hold_actions=""
+stop_display_hold
+stop_display_hold
+expect "$hold_actions" "stop:1001 " "Display release is idempotent for shutdown cleanup"
 
 printf 'PASS: %s Awake state checks (mocked power and hardware; no system changes)\n' "$checks"

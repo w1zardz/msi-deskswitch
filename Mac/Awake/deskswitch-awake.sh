@@ -7,6 +7,8 @@ monitor="${DESKSWITCH_MONITOR:-MAG322UPF}"
 kvm_device="${DESKSWITCH_KVM_DEVICE:-MSI Gaming Controller}"
 interval="${DESKSWITCH_INTERVAL:-1}"
 grace="${DESKSWITCH_GRACE:-90}"
+display_hold_timeout=30
+display_hold_renew=15
 
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*"; }
 
@@ -25,8 +27,52 @@ set_disabled() {
 wake_display() { /usr/bin/caffeinate -u -t 5 & }
 request_sleep() { /usr/bin/pmset sleepnow >/dev/null; }
 
+display_hold_alive() { [[ -n "$display_hold_pid" ]] && kill -0 "$display_hold_pid" 2>/dev/null; }
+start_display_hold() {
+    # -d keeps USB-C video available even while the KVM is on Windows. A short
+    # lease and parent tracking bound protection if this loop stalls or dies.
+    /usr/bin/caffeinate -d -t "$display_hold_timeout" -w "$$" &
+    display_hold_pid=$!
+}
+retire_display_hold() {
+    kill "$1" 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+}
+ensure_display_hold() {
+    local now="$1" old_pid="$display_hold_pid" alive=0
+    display_hold_alive && alive=1
+    if (( alive == 1 && now >= display_hold_started && now - display_hold_started < display_hold_renew )); then
+        return
+    fi
+    # A forked child may not have acquired its assertion yet. Keep the current
+    # lease through the next renewal; only retire the lease from two renewals
+    # ago, while the middle lease still protects the display.
+    start_display_hold
+    display_hold_started=$now
+    if (( alive == 1 )); then
+        [[ -z "$display_hold_previous_pid" ]] || retire_display_hold "$display_hold_previous_pid"
+        display_hold_previous_pid="$old_pid"
+    else
+        # Keep any earlier overlap while replacing a child that died early.
+        [[ -z "$old_pid" ]] || retire_display_hold "$old_pid"
+    fi
+    if (( alive == 0 )); then
+        log "display idle protection enabled: pid=${display_hold_pid} lease=${display_hold_timeout}s renew=${display_hold_renew}s"
+    fi
+}
+stop_display_hold() {
+    if [[ -n "$display_hold_pid" ]]; then
+        retire_display_hold "$display_hold_pid"
+        [[ -z "$display_hold_previous_pid" ]] || retire_display_hold "$display_hold_previous_pid"
+        display_hold_pid=""
+        display_hold_previous_pid=""
+        log "display idle protection released"
+    fi
+}
+
 restore() {
     trap - TERM INT HUP EXIT
+    stop_display_hold
     set_disabled 0
     exit 0
 }
@@ -37,6 +83,9 @@ reset_state() {
     dock_was_present=0
     protection_was_wanted=0
     last_state=""
+    display_hold_pid=""
+    display_hold_previous_pid=""
+    display_hold_started=0
 }
 
 # Take one snapshot before deciding whether to sleep or wake. MSI USB can be
@@ -68,6 +117,7 @@ update_state() {
     sleep_disabled && disabled=1
 
     if (( want == 1 )); then
+        ensure_display_hold "$now"
         (( disabled == 1 )) || set_disabled 1
         if (( dock == 1 && (protection_was_wanted == 0 || dock_was_present == 0 || disabled == 0) )); then
             log "dock activated: waking display (${reason})"
@@ -76,11 +126,15 @@ update_state() {
             log "kvm returned to mac: waking display"
             wake_display
         fi
-    elif (( disabled == 1 )); then
-        # powerd does not re-check the lid after disablesleep is cleared.
-        if set_disabled 0 && lid_closed; then
-            log "lid closed without dock protection: sleeping (${reason})"
-            request_sleep
+    else
+        # Drop the display assertion before allowing a closed Mac to sleep.
+        stop_display_hold
+        if (( disabled == 1 )); then
+            # powerd does not re-check the lid after disablesleep is cleared.
+            if set_disabled 0 && lid_closed; then
+                log "lid closed without dock protection: sleeping (${reason})"
+                request_sleep
+            fi
         fi
     fi
 
@@ -94,9 +148,13 @@ main() {
         log "interval and grace must be positive integer seconds"
         return 1
     fi
+    if (( interval >= display_hold_timeout - display_hold_renew )); then
+        log "interval must be less than $((display_hold_timeout - display_hold_renew)) seconds to renew display protection"
+        return 1
+    fi
     trap restore TERM INT HUP EXIT
     reset_state
-    log "start: monitor=${monitor} kvm=${kvm_device} interval=${interval}s grace=${grace}s"
+    log "start: monitor=${monitor} kvm=${kvm_device} interval=${interval}s grace=${grace}s display-lease=${display_hold_timeout}s"
     while true; do
         update_state "$(date +%s)"
         sleep "$interval"
