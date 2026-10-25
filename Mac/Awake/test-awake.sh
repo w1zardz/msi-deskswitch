@@ -7,6 +7,7 @@ source "$task_dir/deskswitch-awake.sh"
 on_ac() { [[ "$mock_ac" == 1 ]]; }
 monitor_attached() { [[ "$mock_monitor" == 1 ]]; }
 kvm_on_mac() { [[ "$mock_kvm" == 1 ]]; }
+ai_running() { [[ "$mock_ai" == 1 ]]; }
 lid_closed() { [[ "$mock_lid" == 1 ]]; }
 sleep_disabled() { [[ "$mock_disabled" == 1 ]]; }
 set_disabled() { actions="${actions}disable:$1 "; mock_disabled="$1"; }
@@ -32,7 +33,7 @@ expect() {
 }
 fixture() {
     reset_state
-    mock_ac=1 mock_monitor=0 mock_kvm=0 mock_lid=1 mock_disabled=0
+    mock_ac=1 mock_monitor=0 mock_kvm=0 mock_ai=0 mock_lid=1 mock_disabled=0
     actions="" messages=""
     hold_actions="" mock_hold_alive=0 mock_next_pid=1000
     grace=90
@@ -43,7 +44,7 @@ mock_kvm=1
 update_state 100
 expect "$actions" "disable:1 wake " "First authorized MSI USB appearance protects and wakes before framebuffer"
 expect "$last_seen" 100 "USB bootstraps the confirmed dock timestamp"
-expect "$last_state" "ac=1 monitor=0 kvm=1 protection=1 reason=msi-usb" "Logs the USB-only reason"
+expect "$last_state" "ac=1 monitor=0 kvm=1 ai=0 protection=1 reason=msi-usb" "Logs the USB-only reason"
 actions=""; messages=""
 update_state 101
 expect "$actions" "" "Steady dock does not repeatedly wake or modify sleep"
@@ -195,5 +196,71 @@ hold_actions=""
 stop_display_hold
 stop_display_hold
 expect "$hold_actions" "stop:1001 " "Display release is idempotent for shutdown cleanup"
+
+fixture
+mock_ai=1
+update_state 100
+expect "$actions" "disable:1 " "Open AI app on AC protects a closed lid without waking the display"
+expect "$hold_actions" "" "AI-only protection lets the display sleep"
+expect "$last_state" "ac=1 monitor=0 kvm=0 ai=1 protection=1 reason=ai-app" "Logs AI-only protection distinctly"
+expect "$last_seen" -1 "AI-only protection never invents a dock grace period"
+actions=""; messages=""
+update_state 101
+expect "$actions" "" "Steady AI protection does not repeat power changes"
+expect "$messages" "" "Steady AI protection does not flood logs"
+mock_ai=0
+update_state 102
+expect "$actions" "disable:0 sleep " "Closing the last AI app restores closed-lid sleep without a dock"
+
+fixture
+mock_ai=1 mock_lid=0
+update_state 100
+actions=""
+mock_ai=0
+update_state 101
+expect "$actions" "disable:0 " "Closing AI apps with an open lid restores normal idle sleep"
+
+fixture
+mock_ai=1
+update_state 100
+actions=""
+mock_ac=0
+update_state 101
+expect "$actions" "disable:0 sleep " "Battery overrides open AI apps and sleeps the closed Mac"
+expect "$hold_actions" "" "AI work never creates display assertions on battery"
+expect "$last_seen" -1 "Battery leaves no stale dock grace after AI-only work"
+actions=""
+mock_ac=1
+update_state 102
+expect "$actions" "disable:1 " "AC return restores AI protection without waking the display"
+
+fixture
+mock_ac=0 mock_ai=1
+update_state 100
+expect "$actions" "" "AI app already open on battery cannot disable sleep"
+expect "$hold_actions" "" "Battery startup cannot hold a display for an AI app"
+
+fixture
+mock_ai=1 mock_monitor=1
+update_state 100
+actions=""; hold_actions=""
+mock_monitor=0
+update_state 189
+expect "$mock_disabled" 1 "Dock grace remains protected with an AI app open"
+hold_actions=""
+update_state 190
+expect "$actions" "" "Expired dock grace hands off to AI without a sleep gap or wake"
+expect "$hold_actions" "stop:1002 stop:1001 " "AI handoff releases both dock display assertions"
+expect "$last_state" "ac=1 monitor=0 kvm=0 ai=1 protection=1 reason=ai-app" "Expired dock becomes AI-only protection"
+hold_actions=""
+mock_kvm=1
+update_state 191
+expect "$actions" "wake " "MSI return still wakes from AI-only protection"
+expect "$hold_actions" "start:1003 " "MSI return restores its display assertion"
+actions=""; hold_actions=""
+mock_ai=0
+update_state 192
+expect "$actions" "" "Closing AI apps leaves a connected dock protected"
+expect "$hold_actions" "" "Closing AI apps does not release a dock display assertion"
 
 printf 'PASS: %s Awake state checks (mocked power and hardware; no system changes)\n' "$checks"

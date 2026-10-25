@@ -1,5 +1,5 @@
 #!/bin/bash
-# Keeps a closed MacBook awake while it is powered and the MSI monitor is attached.
+# Keeps a powered MacBook awake for the MSI dock or open Claude/Codex apps.
 # Runs as root from launchd: toggles `pmset disablesleep`, restores sleep on exit.
 set -u
 
@@ -19,6 +19,14 @@ monitor_attached() {
 kvm_on_mac() { /usr/sbin/ioreg -p IOUSB -w0 | /usr/bin/grep -qF -- "-o ${kvm_device}@"; }
 lid_closed() { /usr/sbin/ioreg -r -k AppleClamshellState -d 1 | /usr/bin/grep -q '"AppleClamshellState" = Yes'; }
 sleep_disabled() { /usr/bin/pmset -g | /usr/bin/grep -qE '^ *SleepDisabled[[:space:]]+1'; }
+ai_running() {
+    # Kernel process names cover native Claude Code versions and Codex bundled
+    # in ChatGPT, without mistaking a shell command mentioning an app for it.
+    /bin/ps -A -c -o comm= | /usr/bin/awk '
+        /^(Claude|ChatGPT|Codex|claude|codex)$/ { found = 1 }
+        END { exit !found }
+    '
+}
 
 set_disabled() {
     /usr/bin/pmset -a disablesleep "$1" && log "disablesleep $1"
@@ -91,10 +99,11 @@ reset_state() {
 # Take one snapshot before deciding whether to sleep or wake. MSI USB can be
 # authorized before its framebuffer appears, particularly on the first docking.
 update_state() {
-    local now="$1" ac=0 display=0 kvm=0 dock=0 want=0 disabled=0 reason state
+    local now="$1" ac=0 display=0 kvm=0 dock=0 ai=0 want=0 display_want=0 disabled=0 reason state
     on_ac && ac=1
     monitor_attached && display=1
     kvm_on_mac && kvm=1
+    ai_running && ai=1
     (( display == 1 || kvm == 1 )) && dock=1
 
     if (( ac == 0 )); then
@@ -104,20 +113,30 @@ update_state() {
     elif (( dock == 1 )); then
         last_seen=$now
         want=1
+        display_want=1
         if (( display == 1 )); then reason="monitor"; else reason="msi-usb"; fi
     elif (( last_seen >= 0 && now - last_seen < grace )); then
         want=1
+        display_want=1
         reason="detach-grace"
+    elif (( ai == 1 )); then
+        want=1
+        reason="ai-app"
     else
         reason="dock-absent"
     fi
 
-    state="ac=${ac} monitor=${display} kvm=${kvm} protection=${want} reason=${reason}"
+    state="ac=${ac} monitor=${display} kvm=${kvm} ai=${ai} protection=${want} reason=${reason}"
     if [[ "$state" != "$last_state" ]]; then log "state: $state"; last_state="$state"; fi
     sleep_disabled && disabled=1
 
     if (( want == 1 )); then
-        ensure_display_hold "$now"
+        if (( display_want == 1 )); then
+            ensure_display_hold "$now"
+        else
+            # Background AI work needs CPU/network, not a lit display.
+            stop_display_hold
+        fi
         (( disabled == 1 )) || set_disabled 1
         if (( dock == 1 && (protection_was_wanted == 0 || dock_was_present == 0 || disabled == 0) )); then
             log "dock activated: waking display (${reason})"
@@ -132,7 +151,7 @@ update_state() {
         if (( disabled == 1 )); then
             # powerd does not re-check the lid after disablesleep is cleared.
             if set_disabled 0 && lid_closed; then
-                log "lid closed without dock protection: sleeping (${reason})"
+                log "lid closed without awake protection: sleeping (${reason})"
                 request_sleep
             fi
         fi
